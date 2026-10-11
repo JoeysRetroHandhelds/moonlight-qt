@@ -40,6 +40,7 @@ VrrTimingParameters legacyPresetParameters(const VrrSessionConfig& session)
 {
     auto policy = vrrTimingParametersForSession(session);
     const int mode = session.latencyMode;
+    policy.playoutAbsorbedJitterRelease = 0;
     policy.playoutIntervalToleranceUs = 0;
     policy.latencyFixEnabled = session.latencyFix || mode != 0;
     policy.latencyFixAllRates = mode != 0;

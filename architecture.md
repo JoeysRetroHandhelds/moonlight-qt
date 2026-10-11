@@ -5,9 +5,47 @@ of a session working on streaming, decoding, rendering, VRR, latency, or replay.
 It explains the implementation and the reasoning needed to investigate it;
 it does not establish that a particular deployed executable matches the source.
 
+
+Experimental task-4 readability candidate (2026-10-11 UTC): copied from the
+currently selected build-claude-app source, preserving its measured/estimated
+GPU decode completion, free VRR headroom credit and no-skip bounded trajectory.
+The earlier task-4 skip-based trajectory description below is historical.
+Only diagnostics, Settings input, calibration host selection and the Smooth
+preset allowance change here. Smooth now resolves to {4000,9995,300,500};
+revision 3 migrates complete old preset tuples, preserving edited Custom values.
+The settings/session snapshot still applies at stream creation. Tolerance is
+subtracted once in the existing buffer policy; a changed preset is not proof of
+physical smoothness or a remedy for runaway buffering.
+
+Normal performance stats use a compact eight-row presentation regardless of
+deep trace capture. Logs explicitly request detailed stats. Buffer coverage
+counts accepted measured frames in the selected input history; actual display
+errors use identity-matched source-relative OS display intervals in the existing
+2-second bucket window, strictly beyond tolerance after uncertainty. Uncertain
+intervals are reported separately, and missing/stale feedback is N/A. It is
+never replaced with input coverage. These OS timestamps are not optical timing.
+The adaptive graph plots the original requirement less the same free VRR room
+credited by the controller; integer red-X decisions subtract tolerance/room once.
+Actual buffer and B+T threshold stay separate; raw stages retain their own basis.
+
+The Settings tolerance content item consumes Left/Right press and release before
+cursor/focus handling. SDL GUI navigation suppresses duplicate downs, pairs each
+release with its original key/modifiers/window and clears presses on focus loss.
+One physical D-pad press makes one 250us step; keyboard repeats remain clamped.
+Streaming shortcuts are unchanged. Calibration host selection uses confirmed
+CS_ONLINE snapshots, preserves UUID selection, handles no online hosts and
+invalidates/cancels a test if its tested host becomes unavailable. Pairing and
+cached application lists do not determine the filtered host list. CPU/software
+unit tests and Deck/4K raster composition verify these paths; physical controller,
+real display feedback and calibration/network stress runs remain unperformed.
+See task-4/readability-analysis/ for source/build/test provenance and previews.
+
 Current source review baseline: `f6024a84` plus the Windows waitable-DXGI default
 and environment-only composition selection in this worktree, reviewed
 2026-10-09 local / 2026-10-10 UTC.
+From 2026-10-10 the adaptive input buffer, bounded catch-up and completion-based
+producer clock are the production VRR default; see "Adaptive input buffer,
+bounded catch-up and completion clock" at the end of this document.
 The 2026-10-09 source-relative cadence detector adds separate submission and
 identity-matched OS display evidence without changing revision-12 control.
 The 2026-10-10 replay qualification additionally caps native scheduled
@@ -651,6 +689,23 @@ Calibration (2026-10-02, reviewed against client `92119295` and host
 `6d8fc5ac` plus these changes) requires an online paired PyroWave host advertising
 UDP probe v1 and wire budget v1. Calibrate PyroWave opens a two-step modal card.
 Step one selects the host and bitrate target and runs only the bandwidth test.
+The calibration host dropdown uses `ComputerModel.onlineHosts`, a snapshot of
+hosts whose current discovery state is `CS_ONLINE`; unknown/offline hosts are
+hidden without modifying saved computers, pairings, or cached app lists. Online
+hosts remain listed even with no apps. `CalibrationHostSelection.qml` preserves
+selection by UUID across discovery refreshes and renames; a disappeared selection
+falls back to the first online host, or clears when none remain. Loss of the tested
+host invalidates its results and requests cancellation of an active calibration;
+returning online requires a fresh test before continuing or applying results.
+The UDP handshake receives the sender port from progressive HTTPS headers and
+sends its token from the receiving socket. Some handshake-v1 hosts send the
+complete probe XML with `Connection: close` but retain the HTTP socket. For this
+endpoint only, the client accepts a bounded, well-formed success document with
+expected/sent/elapsed fields before EOF when no explicit body framing is present.
+Normal status/count/timing validation and the reordered UDP-tail drain still run;
+partial or malformed XML and content-length/chunked responses require normal HTTP
+completion. This compatibility path does not certify the link or replace fresh
+capacity and pace measurements.
 The 2026-10-04 UI follow-up gives the four target cards equal widths and short
 budget descriptions, highlights the next useful action, and groups connection
 progress and the confirmed budget in a status panel. The first screen is 480
@@ -5158,3 +5213,82 @@ check. The live executable SHA-256 is
 `d128c1b0cb0365b3cb767cc32e706a2444e9848efd3438c51093fc403a34f65c`.
 Both share-root tracing launchers document the new default and explicit override.
 Live gameplay under the new default remains to be assessed.
+
+
+### Linux PyroWave source-retention deployment (2026-10-10)
+
+Pool-backed PyroWave Vulkan planes now use the bounded asynchronous source-retention
+path despite their planar software pixel-format descriptors. A cloned AVFrame holds
+the pool slot until every source plane retires its GPU reads; pool entries release
+the AVFrame rather than invoking libplacebo AVFrame unmapping. Decode timeline waits,
+render-complete presentation semaphores, synchronized Mailbox, the four-entry
+retention bound and eight-slot decoder pool remain active. Clone allocation failure
+keeps the synchronous output wait. Teardown finishes GPU work before dropping
+references. The renderer logs source/output formats once for live verification.
+
+The native application build and offscreen help passed. Current-source overlay and
+Vulkan presentation/swapchain tests passed. The pacing suite has six failures in
+unchanged Windows DXGI guard fixtures. The completed Linux 4:4:4 baseline passes
+exact replay. GPU surface lifetime and display improvement require fresh live
+validation. The installed executable SHA-256 is 5c3e9a3bcedd372d04a687a5e6d22825f3671cd935abcd1d9aba0266eb7ce587.
+Deployment atomically replaced the executable; an already running process retains
+its old image until the next normal launch.
+
+
+### Adaptive input buffer, bounded catch-up and completion clock (production default, 2026-10-10)
+
+The adaptive input buffer, bounded catch-up (`PhaseTrajectory`) and normalized
+producer clock are the default for every VRR session. For diagnosis only,
+`MOONLIGHT_VRR_EXPERIMENTAL_ADAPTIVE_BUFFER=0` restores the revision-12 buffer and
+`MOONLIGHT_VRR_BOUNDED_CATCHUP=0` disables catch-up and the normalized clock while
+keeping the adaptive buffer. Traces serialize the active parameters, so captures
+replay with their own policy; a strict replay of a 2026-10-10 VRR17 capture (its
+start-delay seed restored) still reproduces every decision.
+
+**Buffer.** The profile smoothness target and history (for example 99.50% over
+200 s) select a frame-coverage percentile of producer lateness relative to the
+unbuffered source slot. Each requirement subtracts the profile tolerance once and
+the VRR recovery headroom (`recoveryHeadroomUs()`: source period minus the larger
+of display period and typical render), so a lower frame rate never needs more
+buffer than a higher one for the same jitter. A source-rate change that gains
+headroom credits it immediately; previously protection learned at 30 FPS (25 ms)
+was held for about a minute after returning to 110 FPS while evidence
+requalified. Eligible evidence rises at 1000 us/s and falls at 250 us/s; packet
+loss, overload and invalid mappings are ineligible. The overlay labels this
+"Adaptive buffer".
+
+**Producer clock.** Source time maps to reassembly + (decode completion − decode
+submission): our own decoder queue and deliberate decode hold are excluded, the
+decoder's full service time is not. PyroWave's decoder output is GPU submission,
+so anchoring at output (the first candidate) planned frames ~1.1 ms before decode
+completion at the median, up to 5 ms, and every frame was clamped late. The
+worker's completion timestamp is exact only when it blocked on the decode for at
+least 200 us; a frame that finished while queued is observed late, so its
+completion is decoder output plus the median of the last 64 exact GPU decode
+durations, never later than the observation
+(`VrrTimingController::estimateDecodeCompleteUs()`). The input requirement uses
+the same estimate, so GPU decode jitter can grow the buffer.
+
+**Catch-up.** A frame shown later than planned is held on screen; successors
+then run slightly fast until phase returns. Each repays 1/32 of the remaining
+carry, at least 0.5% of its interval, never beyond the interval tolerance or the
+VRR room above the panel's fastest refresh. Lateness is measured against the
+trajectory's own planned target, because immediate (Wayland mailbox) paths
+report the actual submission as the accepted time; only lateness beyond the
+31-frame median submission lateness and the tolerance creates carry. Carry is
+capped at one source period, beyond which the successor accepts compression to
+the physical floor. Catch-up never skips a frame, and stale checks treat carry
+up to one source period as intentional delay like the playout delay; overload
+beyond that is still shed by the existing stale and capacity policy.
+
+**Evidence and limits.** 2026-10-10 Linux 4K 4:4:4 10-bit PyroWave captures
+(`task-4/trajectory-launch/captures/trajectory`): the first candidate dropped
+about one frame per second from a carry that ratcheted with ordinary wake-up
+overshoot, grew the buffer to its 25 ms cap at 30 FPS, and pinned carry at one
+source period on mailbox. A closed-loop replay sweep chose the drain: 4.0–4.2%
+of intervals more than 0.75 ms off versus 7.7–8.1% for a tolerance-sized drain,
+at similar latency. The completion clock and default-on switch have controller
+and worker tests but no live capture yet; Windows and native scheduled
+presentation share the code but were not live-tested. Tests: all 26 VRR suites
+pass, and the pacing worker passes with default, `MOONLIGHT_VRR_BOUNDED_CATCHUP=0`
+and `=1`.
