@@ -264,7 +264,8 @@ jobs:
           test -x squashfs-root/AppRun
           test -x squashfs-root/usr/bin/moonlight
           readelf -h squashfs-root/usr/bin/moonlight | grep -F 'Advanced Micro Devices X86-64'
-          QT_QPA_PLATFORM=offscreen squashfs-root/AppRun --version > version.txt
+          # Exercise the packaged X11 plugin; offscreen is intentionally not bundled.
+          QT_QPA_PLATFORM=xcb xvfb-run -a squashfs-root/AppRun --version > version.txt
           grep -Fx "Moonlight $CI_VERSION" version.txt
 
       - name: Upload Binaries
