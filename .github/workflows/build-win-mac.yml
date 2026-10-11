@@ -48,6 +48,16 @@ jobs:
     runs-on: ${{ matrix.os }}
 
     steps:
+      - name: Enforce GitHub-hosted daily builds
+        if: contains(inputs.ci_version, '-daily.')
+        shell: pwsh
+        env:
+          RUNNER_ENVIRONMENT: ${{ runner.environment }}
+        run: |
+          if ($env:RUNNER_ENVIRONMENT -ne 'github-hosted') {
+            throw 'Daily builds require GitHub-hosted runners.'
+          }
+
       - name: Checkout Repository
         uses: actions/checkout@v5
         with:
@@ -241,6 +251,15 @@ jobs:
             if ($LASTEXITCODE -ne 0) { throw "Daily package validation failed" }
           }
           Copy-Item $bundle "build/installer-x64-release/MoonlightSetup-$ci.exe"
+
+      - name: Recheck VRR version ordering after Windows packaging
+        if: runner.os == 'Windows' && contains(inputs.ci_version, '-vrr')
+        shell: pwsh
+        run: |
+          git fetch origin --tags
+          if ($LASTEXITCODE -ne 0) { throw 'Could not refresh release version history' }
+          python scripts/daily-version.py --check-vrr "$env:CI_VERSION"
+          if ($LASTEXITCODE -ne 0) { throw 'A published daily now supersedes this VRR package' }
 
       - name: Upload Windows release packages
         uses: actions/upload-artifact@v6
