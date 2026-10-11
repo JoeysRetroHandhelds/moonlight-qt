@@ -19,6 +19,7 @@
 #include <functional>
 #include <limits>
 #include <mutex>
+#include <memory>
 #include <string>
 #include <thread>
 #include <vector>
@@ -1471,8 +1472,12 @@ void testTelemetrySnapshotsRemainCumulative()
                readinessProbe.decodeCompleteUs() == 250,
            "GPU readiness must not rewrite the decoder-output timestamp");
 
+    // Four independent histories exceed the Windows default test stack.
+    // Production owns one telemetry object inside the heap-allocated pacer.
+    // Keep this multi-history fixture on the heap without changing assertions.
     // Motion must reveal host-timed judder even when source fidelity is perfect.
-    PacerTelemetry motion;
+    auto motionStorage = std::make_unique<PacerTelemetry>();
+    auto& motion = *motionStorage;
     VrrTelemetrySample motionSample;
     motionSample.presented = true;
     motionSample.submissionUs = 1000000;
@@ -1501,9 +1506,11 @@ void testTelemetrySnapshotsRemainCumulative()
     expect(motion.snapshot().vrrMotionHitches == 6,
            "a local drop must not hide the resulting motion hitch");
 
-    PacerTelemetry legacyTelemetry;
+    auto legacyTelemetryStorage = std::make_unique<PacerTelemetry>();
+    auto& legacyTelemetry = *legacyTelemetryStorage;
     // Decode synchronization must not inflate the visible queue statistic.
-    PacerTelemetry decodeTelemetry;
+    auto decodeTelemetryStorage = std::make_unique<PacerTelemetry>();
+    auto& decodeTelemetry = *decodeTelemetryStorage;
     VrrTelemetrySample decodeSample;
     decodeSample.presented = true;
     decodeSample.clientProcessingTimeUs = 10000;
@@ -1525,7 +1532,8 @@ void testTelemetrySnapshotsRemainCumulative()
                legacySnapshot.totalRenderingTimeUs == 40,
            "legacy timing must use the same exact client-processing partition");
 
-    PacerTelemetry telemetry;
+    auto telemetryStorage = std::make_unique<PacerTelemetry>();
+    auto& telemetry = *telemetryStorage;
     telemetry.beginVrrSession();
 
     constexpr uint64_t frameCount = 512;
