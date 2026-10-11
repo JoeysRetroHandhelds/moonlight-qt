@@ -1,3 +1,5 @@
+#include <vector>
+#include <algorithm>
 #include "../../app/streaming/video/ffmpeg-renderers/pacer/vrr/phasetrajectory.h"
 #include "../../app/streaming/video/ffmpeg-renderers/pacer/vrr/vrrtimingcontroller.h"
 #include "../../app/streaming/video/ffmpeg-renderers/vrrpreparedframe.h"
@@ -189,6 +191,40 @@ void asyncDecodeCompletionPlanning() {
     std::fprintf(stderr,"async decode planning: early=%llu/%llu mean plan after completion=%lluus typicalGpu=%lluus\n",
         (unsigned long long)early,(unsigned long long)planned,(unsigned long long)(planned?lead/planned:0),(unsigned long long)c.typicalDecodeGpuUs());
 }
+// Bounded catch-up owns recovery. The VRR17 late-recovery floor re-armed on
+// every submission later than the original plan, i.e. on every carried frame,
+// and spaced each frame from the previous actual submission: at 116 FPS on a
+// 120 Hz panel it may recover only 0.19 ms per frame, less than the usual
+// 0.28 ms wake-up overshoot, so one late frame left carry that never drained
+// (2026-10-10 23:38: carry p50 7.7 ms, 81% of frames pushed past plan).
+void legacyRecoveryCannotSustainCarry() {
+    VrrSessionConfig session;session.streamRateHz=116;session.displayRefreshHz=120;
+    session.smoothFrameTiming=false;session.experimentalInputPercentilePpm=1;session.experimentalBoundedCatchup=true;
+    session.timingOptions.targetHundredths=9950;session.timingOptions.historySeconds=200;
+    auto policy=vrrTimingParametersForSession(session);
+    policy.playoutDelayMinimumUs=1000;policy.playoutDelayStartSeedUs=1000;policy.playoutDelayMaximumUs=1000;
+    VrrTimingController c(session,true,policy);
+    const uint64_t period=1000000/116;
+    std::vector<uint64_t> carry,pushed;
+    for(int i=0;i<2400;++i) {
+        const uint64_t source=1000000+uint64_t(i)*period;
+        const uint64_t decoded=source+500+(i%200==100?6000:0);
+        PacedFrame f(nullptr,i,uint32_t(uint64_t(i)*90000/116),true,decoded);
+        f.setDeliveryTimeline(decoded-800,decoded-600,decoded-500);
+        const auto d=c.schedule(f,decoded);
+        if(i>=1200) {carry.push_back(d.trajectory.carryUs);pushed.push_back(d.targetUs-d.originalTargetUs);}
+        const uint64_t ready=std::max(decoded,d.renderStartUs)+500;
+        const uint64_t submission=std::max(ready,d.targetUs)+280;
+        c.notePreparationDuration(500,0,ready);c.noteSchedulerDelays(0,0,true);c.noteSubmission(true,false,submission,submission);
+    }
+    std::sort(carry.begin(),carry.end());std::sort(pushed.begin(),pushed.end());
+    const auto median=[](const std::vector<uint64_t>& v){return v[v.size()/2];};
+    const auto p90=[](const std::vector<uint64_t>& v){return v[v.size()*9/10];};
+    std::fprintf(stderr,"legacy recovery with bounded catch-up: carry p50 %lluus p90 %lluus; target-plan p50 %lluus p90 %lluus\n",
+        (unsigned long long)median(carry),(unsigned long long)p90(carry),(unsigned long long)median(pushed),(unsigned long long)p90(pushed));
+    check(median(carry)==0 && median(pushed)==0,"between late frames the schedule returns to its plan");
+    check(p90(carry)<1000,"carry from a 6 ms late frame drains instead of being re-imposed frame after frame");
+}
 void actualCadenceChangeQualification() {
     VrrSessionConfig session;session.streamRateHz=120;session.displayRefreshHz=144;session.smoothFrameTiming=false;
     session.experimentalInputPercentilePpm=1;session.experimentalBoundedCatchup=true;
@@ -253,4 +289,4 @@ void actualControllerAndInputIsolation() {
     late.reset();check(late.trajectoryStats().plans==0,"controller full reset clears trajectory model");
 }
 }
-int main() {decodeCompletionEstimate();asyncDecodeCompletionPlanning();compressionAndAcceptance();resyncAndLifecycle();preparedSuccessorProof();sourceMappingFactorial();actualCadenceChangeQualification();actualControllerAndInputIsolation();std::fprintf(stderr,"phase trajectory integration: %s (%d failures)\n",failures?"FAIL":"PASS",failures);return failures?1:0;}
+int main() {decodeCompletionEstimate();legacyRecoveryCannotSustainCarry();asyncDecodeCompletionPlanning();compressionAndAcceptance();resyncAndLifecycle();preparedSuccessorProof();sourceMappingFactorial();actualCadenceChangeQualification();actualControllerAndInputIsolation();std::fprintf(stderr,"phase trajectory integration: %s (%d failures)\n",failures?"FAIL":"PASS",failures);return failures?1:0;}

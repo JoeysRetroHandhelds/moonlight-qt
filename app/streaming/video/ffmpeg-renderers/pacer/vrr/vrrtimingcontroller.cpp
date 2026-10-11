@@ -1083,7 +1083,13 @@ VrrTimingDecision VrrTimingController::schedule(const PacedFrame& frame,
     // never remove that protection. Never hold past the stale horizon.
     const uint64_t elapsed = nowUs > frame.decoderOutputUs() ? nowUs - frame.decoderOutputUs() : 0;
     const uint64_t queueAge = elapsed - std::min(elapsed, frame.decodeSyncWaitUs());
-    const bool recoveryEligible = timestampPlayout && !rebased && !reseedPhase &&
+    // Bounded catch-up (PhaseTrajectory) owns recovery when enabled. This
+    // VRR17 floor spaces each frame from the previous actual submission and
+    // re-arms on any submission past the original plan, so with a trajectory
+    // carrying it stayed armed and re-imposed every wake-up overshoot: carry
+    // sat at its 4 ms extra limit (2026-10-10 23:38, 81% of frames pushed).
+    const bool recoveryEligible = !m_Parameters.boundedCatchupEnabled &&
+        timestampPlayout && !rebased && !reseedPhase &&
         cadence.eligible && !cadence.phaseDiscontinuity && !cadence.sourceRateChanged &&
         m_HaveLastSubmission &&
         m_Parameters.playoutCatchupPerMille != 0 &&
@@ -1123,8 +1129,14 @@ VrrTimingDecision VrrTimingController::schedule(const PacedFrame& frame,
         const bool valid = timestampPlayout && !rebased && !cadence.phaseDiscontinuity &&
             !cadence.sourceRateChanged;
         m_Pending.trajectoryValid = valid;
+        // The previous actual submission includes its wake-up overshoot, and
+        // this frame will overshoot too. Counting it twice left 8 us/frame of
+        // catch-up room at 116 FPS on 120 Hz, so carry lingered; remove the
+        // smallest recent overshoot, which the next submission also incurs.
+        const uint64_t anchorUs = spacingAnchorUs();
         const uint64_t ownershipFloor = m_HaveLastSubmission ?
-            saturatingAdd(spacingAnchorUs(), m_DisplayPeriodUs) : 0;
+            saturatingAdd(anchorUs - std::min(anchorUs, m_PhaseTrajectory.minimumRecentLatenessUs()),
+                          m_DisplayPeriodUs) : 0;
         trajectory = m_PhaseTrajectory.plan(uint64_t(frame.frameNumber()),
             addSigned(m_SourceTimeUs, smoothingUs), originalTargetUs, targetUs,
             saturatingAdd(nowUs, saturatingAdd(renderOffsetUs, m_Parameters.presentationSafetyUs)),
@@ -2461,7 +2473,7 @@ void VrrTimingController::noteSubmission(bool submitted, bool cancelled,
     }
     const bool nativeLatch = m_NativeLatchPending;
     m_NativeLatchPending = false;
-    if (m_Parameters.playoutLateRecovery != 0) {
+    if (m_Parameters.playoutLateRecovery != 0 && !m_Parameters.boundedCatchupEnabled) {
         // Preparation/submission may miss a target after schedule() returned,
         // with no old queued frames at all. Arm recovery from that actual
         // result as well as from queue age. Small timer noise does not arm it;

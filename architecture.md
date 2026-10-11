@@ -5302,6 +5302,23 @@ the physical floor. Catch-up never skips a frame, and stale checks treat carry
 up to one source period as intentional delay like the playout delay; overload
 beyond that is still shed by the existing stale and capacity policy.
 
+Bounded catch-up owns recovery: the VRR17 late-recovery floor (`VrrCatchUp`) is
+skipped while it is enabled. That floor spaced each frame from the previous
+actual submission and re-armed on any submission later than the original plan,
+so once the trajectory carried any delay it stayed armed. At 116 FPS on a
+120 Hz panel it could recover 0.19 ms per frame, less than the usual 0.28 ms
+wake-up overshoot, and re-imposed each frame's lateness on the next: in the
+2026-10-10 sessions 81% of frames were pushed past plan, carry sat at a median
+of 4.0-7.7 ms on top of the buffer (buffer plus carry 14-16 ms at 99.50%, versus
+3.1 ms under VRR17), and 528 of 545 frames the buffer model counted as late
+were in fact presented on time on the carried schedule. The trajectory's own
+physical floor (one display period after the previous submission) now starts
+from that submission minus the smallest of the last 31 wake-up overshoots, which
+the next submission also incurs; counting the overshoot twice left 8 us of
+catch-up room per frame. In a 116 FPS controller test with 0.28 ms overshoot
+and a 6 ms late frame every 200 frames, carry falls from 4.0 ms at every frame
+to a median of 0 (p90 78 us).
+
 **Evidence and limits.** 2026-10-10 Linux 4K 4:4:4 10-bit PyroWave captures
 (`task-4/trajectory-launch/captures/trajectory`): the first candidate dropped
 about one frame per second from a carry that ratcheted with ordinary wake-up

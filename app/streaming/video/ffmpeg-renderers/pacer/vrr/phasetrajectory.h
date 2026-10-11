@@ -119,6 +119,14 @@ public:
     }
     void reset() { *this = PhaseTrajectory{}; }
     Stats stats() const { return m_Stats; }
+    // The smallest recent submission lateness (wake-up overshoot). The next
+    // submission will be at least this late as well, so a physical floor
+    // measured from the previous actual submission may start this much
+    // earlier without beating the panel's fastest refresh.
+    uint64_t minimumRecentLatenessUs() const {
+        if (!m_LatenessCount) return 0;
+        return *std::min_element(m_Lateness.begin(), m_Lateness.begin() + m_LatenessCount);
+    }
 private:
     uint64_t latenessBaseline() const {
         if (!m_LatenessCount) return 0;
