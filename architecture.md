@@ -4052,6 +4052,21 @@ worker run, and rejects focus loss during frame delivery.
 
 ### Linux Vulkan presentation
 
+Linux package capabilities must be qualified independently of launch/version.
+The daily.183 AppImage disabled Moonlight Wayland, lacked matching Qt Wayland
+plugins, and built SDL without its Wayland backend; its X11 launch test did not
+qualify native feedback or HDR. The corrected packaging candidate enables all
+three layers, keeps DRM/EGLFS renderer policy separate, and uses host libwayland
+with host Mesa/EGL to avoid an older bundled client library hiding host symbols.
+AMDGPU stable-pstate capability detection accepts distribution header layouts
+while retaining required ioctl operations and the existing stream-scoped hold.
+Package gates inspect actual SDL drivers, Qt plugins, feedback/HDR code and GPU
+capability; isolated feedback tests and private headless Wayland startup complement
+the existing X11 smoke test. They do not establish hardware HDR surface negotiation,
+physical VRR, GPU state changes or calibration quality. Matched Deck runtime
+validation remains required; backend/present-mode calibration caches are preserved
+and must not be cross-seeded from Immediate into Mailbox.
+
 On Linux the VRR request prefers the Vulkan frontend. The adaptive mode is
 selected for the surface at startup: Mailbox on ordinary Wayland, Immediate on
 X11/KMSDRM, and Immediate on Gamescope. Gamescope additionally tries Mailbox
