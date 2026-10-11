@@ -16,8 +16,12 @@ assert b'Wayland presentation feedback enabled for adaptive buffering' in payloa
 assert b'GPU performance hold: unavailable in this build' not in payload, 'AMDGPU capability compiled out'
 assert b'does not support HDR10 (ST.2084 PQ)' in payload, 'Vulkan HDR negotiation code missing'
 plugin_roots = [root] + ([args.qt_plugins] if args.qt_plugins else [])
-for name in ('libqwayland-egl.so', 'libqwayland-generic.so'):
-    assert any(list(p.rglob(name)) for p in plugin_roots), f'Matching Qt platform plugin missing: {name}'
+# Qt 6.10 moved Wayland QPA into qtbase and builds the unified qwayland plugin.
+# Earlier matched Qt builds provide separate generic/EGL platform plugins.
+unified = any(list(p.rglob('libqwayland.so')) for p in plugin_roots)
+legacy = all(any(list(p.rglob(name)) for p in plugin_roots)
+             for name in ('libqwayland-egl.so', 'libqwayland-generic.so'))
+assert unified or legacy, 'Matching Qt Wayland platform plugin missing'
 sdl = next((root / 'usr/lib').glob('libSDL3.so.0'), None) or next((root / 'lib').glob('libSDL3.so.0'))
 library = ctypes.CDLL(str(sdl.resolve()))
 library.SDL_GetVideoDriver.argtypes = [ctypes.c_int]
