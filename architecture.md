@@ -4768,6 +4768,12 @@ discontinuities break the curves and ID matching, while ordinary client drops
 remain visible in the next measured submission interval. A fresh live stream is
 required to verify readability and GPU/upload cost on a particular device.
 
+GPU performance hold build compatibility (2026-10-11): the optional Linux
+request is compiled only when the installed AMDGPU header provides every
+context and stable-pstate symbol it uses. Older headers (including Ubuntu 22.04)
+compile a no-op hold and log its unavailability when the setting is enabled.
+Complete modern headers retain the context-owned request and restoration below.
+
 GPU performance hold (2026-10-03, over `92119295`): with Settings > **High-performance
 GPU power while streaming** (`highPerformanceGpuPower`, default off), `Session::exec()`
 holds a `GpuPerformanceHold` for the stream. On Linux it selects amdgpu render
