@@ -235,6 +235,43 @@ jobs:
             bash scripts/generate-dmg.sh Release
           }
 
+      - name: Test nightly updater and macOS display timing
+        if: runner.os == 'macOS' && contains(inputs.ci_version, '-daily.')
+        timeout-minutes: 10
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p build/nightly-tests-updates build/nightly-tests-timing
+          (cd build/nightly-tests-updates && qmake ../../tests/updates/updates.pro CONFIG+=release && make -j2 && ./tst_autoupdatechecker)
+          (cd build/nightly-tests-timing && qmake ../../tests/vrr/macdisplaytiming.pro CONFIG+=release && make -j2 && ./tst_macdisplaytiming)
+
+      - name: Verify nightly universal macOS DMG
+        if: runner.os == 'macOS' && contains(inputs.ci_version, '-daily.')
+        timeout-minutes: 5
+        shell: bash
+        run: |
+          set -euo pipefail
+          dmg="build/installer-Release/Moonlight-$CI_VERSION.dmg"
+          test -s "$dmg"
+          mount="$RUNNER_TEMP/nightly-dmg-verification"
+          mkdir -p "$mount"
+          hdiutil attach "$dmg" -readonly -nobrowse -mountpoint "$mount"
+          trap 'hdiutil detach "$mount"' EXIT
+          app="$mount/Moonlight.app"
+          test -d "$app"
+          lipo "$app/Contents/MacOS/Moonlight" -verify_arch x86_64 arm64
+          version=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app/Contents/Info.plist")
+          test "$version" = "$(cat app/version.txt)"
+          bundle=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$app/Contents/Info.plist")
+          identity=$(/usr/libexec/PlistBuddy -c 'Print :MoonlightNightlyVersion' "$app/Contents/Info.plist")
+          source=$(/usr/libexec/PlistBuddy -c 'Print :MoonlightSourceCommit' "$app/Contents/Info.plist")
+          test "$bundle" = "6.2.${CI_VERSION##*-daily.}"
+          test "$identity" = "$CI_VERSION"
+          test "$source" = "$(git rev-parse HEAD)"
+          test -z "${SIGNING_IDENTITY:-}"
+          test -z "${NOTARY_KEYCHAIN_PROFILE:-}"
+          echo 'Universal x86_64/arm64 DMG identity verified; no Developer ID signing or notarization requested.'
+
       - name: Stage Windows installer bundle
         if: runner.os == 'Windows'
         shell: pwsh
