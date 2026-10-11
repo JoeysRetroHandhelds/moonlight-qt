@@ -119,12 +119,8 @@ jobs:
             echo 'Release already exists; refusing to replace it' >&2
             exit 1
           fi
-          printf 'Daily Windows, universal macOS and Linux x86_64 AppImage prerelease. Windows packages are unsigned; macOS has no Developer ID signature or notarization. Source: `%s`.\n\nRequired Windows build/test/replay/version/package, macOS updater/timing/universal DMG and Linux updater/haptics/AppImage gates passed.\n\n' "$SOURCE_SHA" > release-notes.md
-          if [[ "$CI_VERSION" == 6.2.0-daily.* ]]; then
-            printf '**Version migration:** the fork app base is now 6.2.0; this does not claim full upstream feature parity. Windows retains monotonic ProductVersion 6.2.B. Clients from 6.1.0-daily.182 or earlier cannot detect this new tag family and must download this release manually once. The updated client recognizes both nightly families.\n\n' >> release-notes.md
-          fi
+          : > release-notes.md
           python3 scripts/nightly_notes.py --repo "$GH_REPO" --tag "$DAILY_TAG" --version "$CI_VERSION" --source "$SOURCE_SHA" --assets release-assets --notes release-notes.md
-          cat release-assets/SHA256SUMS >> release-notes.md
       - name: Create draft prerelease and upload unsigned packages
         run: |
           set -euo pipefail

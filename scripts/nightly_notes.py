@@ -93,6 +93,7 @@ def make_notes(repo, tag, version, source, previous, commits, ancestor=True):
                     commits_total=len(commits), commits_listed=len(commits))
     if repo == 'Nonary/moonlight-qt':
         metadata['windows_product_version'] = f'6.2.{seq}'
+        return moonlight_notes(repo, tag, version, previous, commits, compare, ancestor), metadata
     notes = [f'## Nightly changes ({version})', '', f'Source: [{source}](https://github.com/{repo}/commit/{source})', '']
     if first:
         notes += ['First published nightly: no previous successful nightly baseline exists. No commit delta is claimed.']
@@ -110,6 +111,32 @@ def make_notes(repo, tag, version, source, previous, commits, ancestor=True):
             fence = '`' * max(3, max((len(m[0]) for m in re.finditer(r'`+', message)), default=0) + 1)
             notes += ['', f'[{sha[:12]}](https://github.com/{repo}/commit/{sha})', fence + 'text', message.rstrip('\n'), fence]
     return '\n'.join(notes) + '\n', metadata
+
+
+def moonlight_notes(repo, tag, version, previous, commits, compare, ancestor):
+    import html
+    notes = ['This is a nightly release of Moonlight and contains several bug fixes and may contain new features. Check the commit log for more information.',
+             '', 'Moonlight builds are unsigned and may show an unverified publisher. macOS builds are not Developer ID signed or notarized. These nightly builds may trigger security warnings or false-positive antivirus alerts.']
+    if version.startswith('6.2.0-daily.'):
+        notes += ['', 'Users of 6.1.0-daily.182 or earlier must download this update manually once; automatic nightly updates work after upgrading.']
+    notes += ['', f'[SHA256 checksums](https://github.com/{repo}/releases/download/{tag}/SHA256SUMS)',
+              '', '<details>', '<summary>Commit log</summary>', '']
+    if previous:
+        old_tag = previous['tag']
+        notes += [f'Changes since [{old_tag}](https://github.com/{repo}/releases/tag/{old_tag}) · [Compare]({compare})', '']
+        if not ancestor:
+            notes += ['Source history changed; this log lists newly reachable commits.', '']
+    else:
+        notes += ['First nightly release; no preceding nightly is available for comparison.', '']
+    for sha, message in commits:
+        exact_sha(sha)
+        subject = html.escape(message.splitlines()[0] if message.splitlines() else '(no commit subject)')
+        subject = subject.replace('\\', '\\\\').replace('[', '\\[').replace(']', '\\]')
+        notes += [f'- [{sha[:12]}](https://github.com/{repo}/commit/{sha}) {subject}']
+    if previous and not commits:
+        notes += ['No new commits in this comparison.']
+    notes += ['', '</details>']
+    return '\n'.join(notes) + '\n'
 
 
 def load_previous(repo):
