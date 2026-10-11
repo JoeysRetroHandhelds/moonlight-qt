@@ -1,40 +1,76 @@
 #include "assertions.h"
 #include "../../app/streaming/video/performancestats.h"
+#include "../../app/streaming/video/ffmpeg-renderers/pacer/vrr/cadencedetection.h"
+#include <algorithm>
 #include <iostream>
 
 using PerformanceStats::Snapshot;
+using PerformanceStats::formatVrr;
+static bool has(const std::string& text, const char* part) { return text.find(part) != std::string::npos; }
+
 int main(int argc, char** argv)
 {
     Snapshot s;
-    s.width = 3840; s.height = 2160; s.codec = "PyroWave 10-bit HDR 4:4:4";
-    s.receivedFps = s.decodedFps = s.renderedFps = 110.0;
-    s.rttMs = 2; s.decodeMs = 3.85; s.queueMs = 6.42;
     s.vrr = s.adaptive = true;
-    s.bufferUs = 5700; s.bufferCapUs = 36364;
-    s.targetPpm = 999500; s.historyUs = 300000000; s.toleranceUs = 500;
+    s.bufferUs = 5700;
+    s.targetPpm = 999500; s.toleranceUs = 500;
     s.input.samples = s.input.recentEligible = 22000;
     s.input.recentMissed = 11; s.input.recentAbsorbed = 200;
     s.input.windowUs = 300000000; s.input.targetUs = 5420;
     s.input.tailUncertain = false;
-    s.display.intervals = 220; s.display.deviations = 4; s.display.uncertain = 2;
-    s.display.lastObservedUs = s.nowUs = 10000000;
-    auto text = PerformanceStats::format(s);
-    assert(text.find("99.95% (21989/22000 frames)") != std::string::npos);
-    assert(text.find("4/220 (1.82%) | uncertain 2") != std::string::npos);
-    assert(text.find("DISPLAY >0.50 ms (2s matched)") != std::string::npos);
-    assert(text.find("history 300s | tolerance 0.50 ms") != std::string::npos);
+    s.present.intervals = 3300; s.present.misses = 33; s.present.hitches = 1; s.present.worstAddedUs = 4200;
+    s.present.lastObservedUs = s.nowUs = 10000000;
+    auto text = formatVrr(s);
+    // Each current value shares one line with its target.
+    assert(has(text, "VRR buffer: 5.70 ms (target 5.42 ms) | coverage 99.95% / 99.95% target\n"));
+    assert(has(text, "Present timing issues (30s): 1.00% >0.50 ms | hitches 1 | worst +4.2 ms\n"));
+    assert(std::count(text.begin(), text.end(), '\n') == 2);
     if (argc > 1 && std::string(argv[1]) == "--fixture") { std::cout << text; return 0; }
+
     // A legitimate measured zero differs from missing or stale feedback.
-    s.display.deviations = 0;
-    assert(PerformanceStats::format(s).find("0/220 (0.00%)") != std::string::npos);
-    ++s.nowUs; s.nowUs += 1000000;
-    assert(PerformanceStats::format(s).find("N/A (no recent matched feedback)") != std::string::npos);
-    s.nowUs = s.display.lastObservedUs; s.display.intervals = 0;
-    assert(PerformanceStats::format(s).find("N/A (no recent matched feedback)") != std::string::npos);
+    s.present.misses = 0;
+    assert(has(formatVrr(s), "Present timing issues (30s): 0.00% >0.50 ms"));
+    s.nowUs += 1000001;
+    assert(has(formatVrr(s), "Present timing issues (30s): N/A (no recent display feedback)"));
+    s.present.lastPausedUs = s.nowUs;
+    assert(has(formatVrr(s), "Present timing issues (30s): paused below VRR range"));
+    s.input.tailUncertain = true;
+    assert(has(formatVrr(s), "VRR buffer: 5.70 ms (target 5.42 ms learning) | "));
     s.input.recentEligible = 0;
-    assert(PerformanceStats::format(s).find("Buffer coverage (300s): N/A") != std::string::npos);
+    assert(has(formatVrr(s), "| coverage N/A / 99.95% target\n"));
+    s.atLimit = true;
+    assert(has(formatVrr(s), "VRR buffer: 5.70 ms at limit (target 5.42 ms learning) | "));
+    // Revision-12 buffer: the client timing score takes coverage's place.
+    s.adaptive = false; s.atLimit = false;
+    assert(has(formatVrr(s), "VRR buffer: 5.70 ms | client timing collecting / 99.95% target\n"));
+    s.clientTimingValid = true; s.clientTimingPercent = 99.53;
+    assert(has(formatVrr(s), "VRR buffer: 5.70 ms | client timing 99.53% / 99.95% target\n"));
     s.vrr = false;
-    assert(PerformanceStats::format(s).find("DISPLAY") == std::string::npos);
+    assert(formatVrr(s) == "VRR pacing: inactive\n");
+
+    // Host timestamp jitter is not a display error. Frames submitted and shown
+    // exactly on plan while source timestamps alternate by 0.8 ms: the old
+    // source-relative display line flagged every interval.
+    for (const bool displayAdded : {false, true}) {
+        Vrr13::CadenceDetection sourceRelative;
+        Vrr13::PresentTiming present;
+        const Vrr13::PresentTiming::Limits limits{500, 8333, 9091, 0};
+        for (uint64_t i = 1; i <= 200; ++i) {
+            const uint64_t plan = 1000000 + i * 9091;
+            const uint64_t source = plan + (i % 2 ? 800 : 0);
+            const uint64_t shown = plan + 4800 + (displayAdded && i == 100 ? 600 : 0);
+            sourceRelative.observe({i, source, shown, shown + 1000, 0, true}, 500);
+            present.observe({i, plan - 200, shown, plan, 0, shown + 1000}, limits);
+        }
+        assert(sourceRelative.stats().deviations == sourceRelative.stats().intervals);
+        assert(present.stats().intervals == 199);
+        // Display-added error beyond tolerance still counts, on both sides.
+        assert(present.stats().misses == (displayAdded ? 2u : 0u));
+        s.vrr = s.adaptive = true;
+        s.present = present.stats(); s.nowUs = s.present.lastObservedUs;
+        assert(has(formatVrr(s), displayAdded ? "Present timing issues (30s): 1.01% >0.50 ms" :
+                                                "Present timing issues (30s): 0.00% >0.50 ms"));
+    }
 
     // Exact 500 us is accepted; only strictly larger certain residuals count.
     for (uint64_t error : {499, 500, 501}) {
@@ -68,5 +104,5 @@ int main(int argc, char** argv)
     // Rolling 2 s buckets expire old errors and their denominator together.
     cadence.observe({6, 60000, 1050000, 3500000, 0, true}, 500);
     assert(cadence.stats().intervals == 1 && cadence.stats().deviations == 0);
-    std::cout << "Compact stats, N/A feedback, coverage, strict tolerance and matched-window denominator passed\n";
+    std::cout << "VRR summary lines, plan-referenced present timing, N/A feedback, strict tolerance and matched-window denominator passed\n";
 }

@@ -1228,8 +1228,8 @@ void FFmpegVideoDecoder::stringifyVideoStats(VIDEO_STATS& stats, char* output, i
     int offset = 0;
     const char* codecString;
     int ret;
-    // Trace capture and overlay presentation are independent. The experimental
-    // launcher enables deep capture, but normal overlays remain compact.
+    // Trace capture and overlay presentation are independent. The overlay keeps
+    // Moonlight's stats plus a short VRR summary; the log gets the breakdown.
     const bool advancedStats = detailed;
 
     // Start with an empty string
@@ -1319,34 +1319,6 @@ void FFmpegVideoDecoder::stringifyVideoStats(VIDEO_STATS& stats, char* output, i
         break;
     }
 
-    if (!advancedStats) {
-        PerformanceStats::Snapshot compact;
-        compact.width = m_VideoDecoderCtx ? m_VideoDecoderCtx->width : m_OriginalVideoWidth;
-        compact.height = m_VideoDecoderCtx ? m_VideoDecoderCtx->height : m_OriginalVideoHeight;
-        compact.codec = codecString;
-        compact.receivedFps = stats.receivedFps;
-        compact.decodedFps = stats.decodedFps;
-        compact.renderedFps = stats.renderedFps;
-        compact.rttMs = stats.lastRtt;
-        compact.decodeMs = stats.decodedFrames ? stats.totalDecodeTimeUs / (stats.decodedFrames * 1000.0) : 0;
-        compact.queueMs = stats.renderedFrames ? stats.totalQueuePacingTimeUs / (stats.renderedFrames * 1000.0) : 0;
-        compact.networkDropPercent = stats.totalFrames ? stats.networkDroppedFrames * 100.0 / stats.totalFrames : 0;
-        compact.clientDropPercent = stats.decodedFrames ? stats.pacerDroppedFrames * 100.0 / stats.decodedFrames : 0;
-        compact.vrr = stats.vrrTelemetryActive;
-        compact.adaptive = stats.vrrReadiness.interval.inputPercentileEnabled;
-        compact.bufferUs = stats.vrrAppliedBufferUs;
-        compact.bufferCapUs = stats.vrrBufferCapUs;
-        compact.targetPpm = stats.vrrOnTimeTargetPerMillion;
-        compact.historyUs = stats.vrrReadiness.interval.scoreWindowUs;
-        compact.toleranceUs = stats.vrrReadiness.interval.toleranceUs;
-        compact.input = stats.vrrReadiness.interval.inputPercentile;
-        compact.display = stats.vrrReadiness.interval.displayCadence;
-        compact.nowUs = LiGetMicroseconds();
-        const auto text = PerformanceStats::format(compact);
-        snprintf(output, length, "%s", text.c_str());
-        return;
-    }
-
     if (stats.receivedFps > 0) {
         if (m_VideoDecoderCtx != nullptr || m_PyroWaveActive) {
 #ifdef DISPLAY_BITRATE
@@ -1421,16 +1393,22 @@ void FFmpegVideoDecoder::stringifyVideoStats(VIDEO_STATS& stats, char* output, i
             snprintf(rttString, sizeof(rttString), "N/A");
         }
 
+        // The overlay keeps Moonlight's original rows; the log adds decoder skips.
+        char skipped[64] = "";
+        if (advancedStats) {
+            snprintf(skipped, sizeof(skipped), "Frames skipped before decoding: %.2f%%\n",
+                     (float)stats.decoderSkippedFrames / stats.totalFrames * 100);
+        }
         ret = snprintf(&output[offset],
                        length - offset,
                        "Frames dropped by your network connection: %.2f%%\n"
                        "Frames dropped by client pacing: %.2f%%\n"
-                       "Frames skipped before decoding: %.2f%%\n"
+                       "%s"
                        "Average network latency: %s\n"
                        "Average decoding time: %.2f ms (waiting for the decoder %.2f ms)\n",
                        (float)stats.networkDroppedFrames / stats.totalFrames * 100,
                        (float)stats.pacerDroppedFrames / stats.decodedFrames * 100,
-                       (float)stats.decoderSkippedFrames / stats.totalFrames * 100,
+                       skipped,
                        rttString,
                        (double)(stats.totalDecodeTimeUs / 1000.0) / stats.decodedFrames,
                        (double)(stats.totalDecodeQueueTimeUs / 1000.0) / stats.decodedFrames);
@@ -1453,26 +1431,46 @@ void FFmpegVideoDecoder::stringifyVideoStats(VIDEO_STATS& stats, char* output, i
         }
     }
 
-    if (stats.incomingTimingValid) {
-        const double smoothPercent = IncomingFrameTiming::smoothnessPercent(
-            stats.incomingTimingVarianceTicksSquared);
-        ret = snprintf(&output[offset], length - offset,
-                       "Incoming smoothness (host): %.2f%%\n", smoothPercent);
+    if (advancedStats) {
+        if (stats.incomingTimingValid) {
+            const double smoothPercent = IncomingFrameTiming::smoothnessPercent(
+                stats.incomingTimingVarianceTicksSquared);
+            ret = snprintf(&output[offset], length - offset,
+                           "Incoming smoothness (host): %.2f%%\n", smoothPercent);
+        }
+        else {
+            ret = snprintf(&output[offset], length - offset,
+                           "Incoming smoothness (host): N/A\n");
+        }
+        if (ret < 0 || ret >= length - offset) {
+            SDL_assert(false);
+            return;
+        }
+        offset += ret;
     }
-    else {
-        ret = snprintf(&output[offset], length - offset,
-                       "Incoming smoothness (host): N/A\n");
-    }
-    if (ret < 0 || ret >= length - offset) {
-        SDL_assert(false);
-        return;
-    }
-    offset += ret;
 
     if (stats.vrrTelemetryActive || stats.vrrEligibleFrames != 0 ||
             stats.vrrPacingDroppedFrames != 0 ||
             stats.vrrPresentFailedFrames != 0 ||
             stats.vrrPresentCancelledFrames != 0) {
+        if (!advancedStats) {
+            const auto& interval = stats.vrrReadiness.interval;
+            PerformanceStats::Snapshot vrr;
+            vrr.vrr = stats.vrrTelemetryActive;
+            vrr.adaptive = interval.inputPercentileEnabled;
+            vrr.atLimit = stats.vrrBufferAtLimit;
+            vrr.bufferUs = stats.vrrAppliedBufferUs;
+            vrr.targetPpm = stats.vrrOnTimeTargetPerMillion;
+            vrr.toleranceUs = interval.toleranceUs;
+            vrr.nowUs = LiGetMicroseconds();
+            vrr.input = interval.inputPercentile;
+            vrr.clientTimingValid = stats.vrrReadiness.intervalPolicy && interval.evaluatedUs;
+            vrr.clientTimingPercent = vrr.clientTimingValid ? interval.qualityPercent() : 0;
+            vrr.present = interval.present;
+            ret = snprintf(&output[offset], length - offset, "%s", PerformanceStats::formatVrr(vrr).c_str());
+            if (ret < 0 || ret >= length - offset) { SDL_assert(false); return; }
+            return;
+        }
         if (advancedStats && stats.vrrStateSequence && stats.vrrReadiness.intervalPolicy) {
             const auto& interval = stats.vrrReadiness.interval;
             const auto& update = interval.update;

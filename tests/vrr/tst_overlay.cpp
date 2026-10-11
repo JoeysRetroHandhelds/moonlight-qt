@@ -826,21 +826,28 @@ int main(int argc, char** argv)
         const auto previewFolder = qEnvironmentVariable("MOONLIGHT_READABILITY_PREVIEW_DIR");
         for (const bool fourK : {false, true}) {
             for (const bool graphOnly : {false, true}) {
+                const int width = fourK ? 3840 : 1280, height = fourK ? 2160 : 800;
+                // The normal overlay: Moonlight's stats, then the VRR summary.
+                const std::string moonlight = std::string("Video stream: ") +
+                    (fourK ? "3840x2160" : "1280x800") + " 110.00 FPS (Codec: PyroWave 10-bit HDR 4:4:4)\n"
+                    "Incoming frame rate from network: 110.00 FPS\n"
+                    "Decoding frame rate: 110.00 FPS\n"
+                    "Rendering frame rate: 110.00 FPS\n"
+                    "Host processing latency min/max/average: 1.0/3.2/1.8 ms\n"
+                    "Frames dropped by your network connection: 0.05%\n"
+                    "Frames dropped by client pacing: 0.00%\n"
+                    "Average network latency: 2 ms (variance: 1 ms)\n"
+                    "Average decoding time: 3.85 ms (waiting for the decoder 0.02 ms)\n"
+                    "Average frame queue delay: 6.42 ms\n"
+                    "Average rendering time (including monitor V-sync latency): 1.20 ms\n";
                 PerformanceStats::Snapshot summary;
-                summary.width = fourK ? 3840 : 1280; summary.height = fourK ? 2160 : 800;
-                summary.codec = "PyroWave 10-bit HDR 4:4:4";
-                summary.receivedFps = 110.0;
-                summary.decodedFps = summary.renderedFps = 110;
-                summary.rttMs = 2; summary.decodeMs = 3.85; summary.queueMs = 6.42;
-                summary.vrr = summary.adaptive = true; summary.bufferUs = 5700; summary.bufferCapUs = 36360;
-                summary.targetPpm = 999500; summary.historyUs = 300000000; summary.toleranceUs = 500;
+                summary.vrr = summary.adaptive = true; summary.bufferUs = 5700;
+                summary.targetPpm = 999500; summary.toleranceUs = 500;
                 summary.nowUs = 5000000; summary.input.samples = summary.input.recentEligible = 22000;
                 summary.input.recentMissed = 11; summary.input.targetUs = 5420; summary.input.windowUs = 300000000;
                 summary.input.tailUncertain = false;
-                summary.display.intervals = 220; summary.display.deviations = 4; summary.display.uncertain = 2;
-                summary.display.lastObservedUs = 4990000;
                 auto coherent = adaptiveGraph(6959, true, true);
-                Vrr13::CadenceDetection matchedDisplay;
+                Vrr13::PresentTiming matchedDisplay;
                 BufferHitchHistory stageHistory;
                 uint64_t displayTime = 1000000 + 18 * 9091 + 10000;
                 for (size_t i = 0; i < coherent.points.size(); ++i) {
@@ -854,7 +861,7 @@ int main(int argc, char** argv)
                     point.bufferUs = summary.bufferUs; point.inputTargetUs = summary.input.targetUs;
                     point.toleranceUs = point.inputToleranceUs = summary.toleranceUs;
                     point.inputVrrHeadroomUs = 760;
-                    point.inputProbabilityPpm = summary.targetPpm; point.inputWindowUs = summary.historyUs;
+                    point.inputProbabilityPpm = summary.targetPpm; point.inputWindowUs = summary.input.windowUs;
                     point.inputSamples = summary.input.recentEligible;
                     point.inputAbsorbed = summary.input.recentAbsorbed;
                     point.inputMissed = summary.input.recentMissed;
@@ -865,28 +872,31 @@ int main(int argc, char** argv)
                         if (i == 40 || i == 80 || i == 120) displayTime += 501;
                         if (i == 41 || i == 81 || i == 121) displayTime -= 501;
                         point.displayUs = displayTime;
-                        matchedDisplay.observe({i + 1, point.sourceTimeUs, displayTime,
-                            point.submissionUs + 1500, i == 120 ? uint64_t(1) : uint64_t(0), true}, 500);
+                        matchedDisplay.observe({i + 1, point.submissionUs, displayTime, point.targetUs,
+                            i == 120 ? uint64_t(1) : uint64_t(0), point.submissionUs + 1500},
+                            {summary.toleranceUs, 8333, 9091, 0});
                     }
                     stageHistory.record(point);
                 }
-                summary.display = matchedDisplay.stats();
+                summary.present = matchedDisplay.stats();
+                // 0.501 ms display-added steps count; within uncertainty they do not.
+                assert(summary.present.misses == 4);
                 summary.nowUs = coherent.points.back().submissionUs + 1500;
                 coherent.hitches = stageHistory.snapshot(summary.nowUs);
-                const auto text = PerformanceStats::format(summary) + (graphOnly ? " " : "");
+                const auto text = moonlight + PerformanceStats::formatVrr(summary) + (graphOnly ? " " : "");
                 const auto name = std::string(fourK ? "4k" : "deck") + (graphOnly ? "-graph" : "-stats-graph");
                 if (!previewFolder.isEmpty()) qputenv("MOONLIGHT_OVERLAY_TEST_PREVIEW", qPrintable(previewFolder + "/" + QString::fromStdString(name) + ".bmp"));
-                manager.setOutputSize(summary.width, summary.height);
+                manager.setOutputSize(width, height);
                 manager.setOverlayState(OverlayDebug, !graphOnly);
                 manager.updateOverlayText(OverlayDebug, text.c_str(), coherent);
                 replacement.awaitText(text);
                 std::lock_guard<std::mutex> guard(replacement.lock);
-                assert(replacement.width <= summary.width && replacement.height <= summary.height);
+                assert(replacement.width <= width && replacement.height <= height);
                 assert(replacement.height >= (fourK ? 678 : TimingGraphLayout::Height));
                 if (graphOnly) assert(replacement.height == (fourK ? 679 : TimingGraphLayout::Height));
                 else assert(replacement.height > (fourK ? 679 : TimingGraphLayout::Height));
                 std::cout << "Readability " << name << ": " << replacement.width << "x" << replacement.height
-                          << " fits " << summary.width << "x" << summary.height << "\n";
+                          << " fits " << width << "x" << height << "\n";
             }
         }
         qunsetenv("MOONLIGHT_OVERLAY_TEST_PREVIEW");
