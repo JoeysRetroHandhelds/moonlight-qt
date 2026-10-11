@@ -137,7 +137,7 @@ private slots:
     void nightlyAppImageCompletion()
     {
         auto nightly = release("v6.1.0-daily.182", "Moonlight-6.1.0-daily.182-x86_64.AppImage", true);
-        const auto installed = version("6.1.0-daily.181");
+        const auto installed = version("6.1.0-daily.181", false);
         QVERIFY(AutoUpdateChecker::findUpdate({nightly}, installed, "appimage", "x86_64").isEmpty());
         auto assets = nightly["assets"].toArray();
         for (const QString name : {"nightly-metadata.json", "SHA256SUMS"})
@@ -147,7 +147,7 @@ private slots:
                      .value("tag_name").toString(), QString("v6.1.0-daily.182"));
         QVERIFY(AutoUpdateChecker::findUpdate({nightly}, installed, "appimage", "arm64").isEmpty());
         QVERIFY(AutoUpdateChecker::findUpdate({nightly}, installed, "appimage", "x86_64", false).isEmpty());
-        QVERIFY(AutoUpdateChecker::findUpdate({nightly}, version("6.1.0-daily.182"), "appimage", "x86_64").isEmpty());
+        QVERIFY(AutoUpdateChecker::findUpdate({nightly}, version("6.1.0-daily.182", false), "appimage", "x86_64").isEmpty());
         auto incomplete = assets[0].toObject();
         incomplete["state"] = "new";
         assets[0] = incomplete;
