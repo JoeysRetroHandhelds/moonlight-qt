@@ -34,6 +34,21 @@ class NightlyNotesTests(unittest.TestCase):
         self.assertIn('download this update manually once', notes)
         self.assertEqual(data['previous_source_commit'], A)
         self.assertEqual(data['commits_total'], 1)
+        self.assertIn('flatpak install --user --reinstall ./Moonlight-6.2.0-daily.183-x86_64.flatpak', notes)
+        self.assertIn('flatpak run --user com.moonlight_stream.Moonlight//master', notes)
+        self.assertIn('chmod +x ./Moonlight-6.2.0-daily.183-x86_64.AppImage', notes)
+        self.assertIn('--appimage-extract-and-run', notes)
+
+    def test_package_metadata_lists_exact_source_and_hashes(self):
+        import tempfile
+        import hashlib
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / 'bundle.flatpak').write_bytes(b'flatpak')
+            (root / 'SHA256SUMS').write_text('ignored')
+            (root / 'nightly-metadata.json').write_text('ignored')
+            self.assertEqual(n.artifact_metadata(root, B), [dict(name='bundle.flatpak', source_commit=B,
+                              sha256=hashlib.sha256(b'flatpak').hexdigest())])
 
     def test_moonlight_commit_subject_cannot_close_details(self):
         notes, _ = n.make_notes('Nonary/moonlight-qt', 'v6.2.0-daily.184', '6.2.0-daily.184', B,

@@ -69,9 +69,16 @@ jobs:
     with:
       ci_version: ${{ needs.prepare.outputs.ci_version }}
       source_ref: ${{ needs.prepare.outputs.source_sha }}
+  flatpak:
+    needs: prepare
+    if: needs.prepare.outputs.should_release == 'true'
+    uses: ./.github/workflows/build-flatpak.yml
+    with:
+      ci_version: ${{ needs.prepare.outputs.ci_version }}
+      source_ref: ${{ needs.prepare.outputs.source_sha }}
   publish:
-    needs: [prepare, windows, linux]
-    if: needs.prepare.outputs.should_release == 'true' && needs.prepare.result == 'success' && needs.windows.result == 'success' && needs.linux.result == 'success' && vars.DAILY_RELEASE_ENABLED == 'true' && vars.DAILY_RELEASE_SOURCE_BRANCH == 'master' && (github.event_name == 'schedule' || inputs.publish)
+    needs: [prepare, windows, linux, flatpak]
+    if: needs.prepare.outputs.should_release == 'true' && needs.prepare.result == 'success' && needs.windows.result == 'success' && needs.linux.result == 'success' && needs.flatpak.result == 'success' && vars.DAILY_RELEASE_ENABLED == 'true' && vars.DAILY_RELEASE_SOURCE_BRANCH == 'master' && (github.event_name == 'schedule' || inputs.publish)
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -97,6 +104,10 @@ jobs:
         with:
           name: Moonlight-LinuxAppImage-${{ needs.prepare.outputs.ci_version }}
           path: release-assets
+      - uses: actions/download-artifact@v6
+        with:
+          name: Moonlight-Flatpak-${{ needs.prepare.outputs.ci_version }}
+          path: release-assets
       - name: Recheck remote history and verify exact assets
         run: |
           set -euo pipefail
@@ -111,7 +122,7 @@ jobs:
           current = module.next_version(subprocess.check_output(['git', 'tag', '--list'], text=True).splitlines())
           assert current == os.environ['CI_VERSION'], 'Tag history changed while building; rerun from scratch'
           assets = Path('release-assets')
-          expected = {f'MoonlightSetup-{current}.exe', f'MoonlightPortable-x64-{current}.zip', f'Moonlight-{current}.dmg', f'Moonlight-{current}-x86_64.AppImage'}
+          expected = {f'MoonlightSetup-{current}.exe', f'MoonlightPortable-x64-{current}.zip', f'Moonlight-{current}.dmg', f'Moonlight-{current}-x86_64.AppImage', f'Moonlight-{current}-x86_64.flatpak'}
           assert {p.name for p in assets.iterdir()} == expected, 'Unexpected or missing assets'
           assert all(p.is_file() and p.stat().st_size > 0 for p in assets.iterdir())
           PY
