@@ -36,6 +36,8 @@ jobs:
       - name: Allocate monotonic Windows version
         id: version
         run: python3 scripts/daily-version.py
+      - name: Test nightly notes and immutable metadata
+        run: python3 -m unittest discover -s scripts/tests -p test_nightly_notes.py -v
       - name: Test release safeguards
         run: python3 -m unittest discover -s scripts/tests -p test_daily_release.py -v
   windows:
@@ -87,8 +89,8 @@ jobs:
             echo 'Release already exists; refusing to replace it' >&2
             exit 1
           fi
-          (cd release-assets && sha256sum Moonlight* > SHA256SUMS)
           printf 'Unsigned daily Windows prerelease. Source: `%s`.\n\nRequired Windows build, test, replay, version, and packaging gates passed.\n\n' "$SOURCE_SHA" > release-notes.md
+          python3 scripts/nightly_notes.py --repo "$GH_REPO" --tag "$DAILY_TAG" --version "$CI_VERSION" --source "$SOURCE_SHA" --assets release-assets --notes release-notes.md
           cat release-assets/SHA256SUMS >> release-notes.md
       - name: Create draft prerelease and upload unsigned packages
         run: |

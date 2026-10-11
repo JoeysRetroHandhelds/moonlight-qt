@@ -49,7 +49,7 @@ Publication uses that SHA as the tag target. The serialized daily lane rechecks
 remote tags after builds; changed history or an existing release stops the run.
 Draft verification requires draft/prerelease flags and the immutable source
 target, and checks the dereferenced tag only when that tag exists. Draft creation
-may defer tag creation until publication. It uploads only the Burn EXE, x64 portable ZIP and
+may defer tag creation until publication. It uploads only the verified Burn EXEs, x64 portable ZIP, nightly metadata and
 SHA256SUMS, downloads them to verify hashes, then publishes with `--latest=false`.
 A failed upload leaves a draft for review. A rerun never replaces existing assets;
 start a fresh run to allocate a new build after resolving a failed draft.
