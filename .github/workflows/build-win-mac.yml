@@ -181,6 +181,9 @@ jobs:
         shell: pwsh
         env:
           QT_PATH: ${{ github.workspace }}\..\Qt\${{ matrix.qt_version }}\msvc2022_64\bin
+          QML_IMPORT_PATH: ${{ github.workspace }}\..\Qt\${{ matrix.qt_version }}\msvc2022_64\qml
+          QML2_IMPORT_PATH: ${{ github.workspace }}\..\Qt\${{ matrix.qt_version }}\msvc2022_64\qml
+          QT_PLUGIN_PATH: ${{ github.workspace }}\..\Qt\${{ matrix.qt_version }}\msvc2022_64\plugins
           QT_QPA_PLATFORM: offscreen
           QT_QUICK_BACKEND: software
         run: |
@@ -189,7 +192,12 @@ jobs:
           foreach ($name in @('tst_calibrationhosts.exe', 'tst_toleranceinput.exe', 'tst_pyrowaveudpaddress.exe', 'tst_pyrowaved3d11interop.exe')) {
             $test = @(Get-ChildItem build/tests-vrr -Recurse -Filter $name | Where-Object { $_.Directory.Name -eq 'release' })
             if ($test.Count -ne 1) { throw "Missing or ambiguous integrated test $name" }
-            & $test[0].FullName
+            Write-Host "Running $name with SDK QML runtime $env:QML_IMPORT_PATH"
+            if ($name -in @('tst_calibrationhosts.exe', 'tst_toleranceinput.exe')) {
+              & $test[0].FullName -o "-,txt"
+            } else {
+              & $test[0].FullName
+            }
             if ($LASTEXITCODE -ne 0) { throw "$name failed: $LASTEXITCODE" }
           }
 
