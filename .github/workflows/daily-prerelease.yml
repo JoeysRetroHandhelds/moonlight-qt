@@ -103,13 +103,16 @@ jobs:
           gh release download "$DAILY_TAG" --dir verified-assets
           (cd verified-assets && sha256sum --check SHA256SUMS)
           git fetch origin --tags
-          test "$(git rev-list -n 1 "$DAILY_TAG")" = "$SOURCE_SHA"
+          gh release view "$DAILY_TAG" --json isDraft,isPrerelease,targetCommitish,tagName > draft-release.json
           python3 - <<'PY'
-          import importlib.util, os, subprocess
+          import importlib.util, json, os, subprocess
           spec = importlib.util.spec_from_file_location('daily_version', 'scripts/daily-version.py')
           module = importlib.util.module_from_spec(spec)
           spec.loader.exec_module(module)
           tags = subprocess.check_output(['git', 'tag', '--list'], text=True).splitlines()
+          tag = os.environ['DAILY_TAG']
+          tag_sha = subprocess.check_output(['git', 'rev-list', '-n', '1', tag], text=True).strip() if tag in tags else None
+          module.verify_draft(json.load(open('draft-release.json')), os.environ['SOURCE_SHA'], tag, tag_sha)
           assert module.next_version([t for t in tags if t != os.environ['DAILY_TAG']]) == os.environ['CI_VERSION'], 'Competing release appeared; draft left unpublished'
           PY
           gh release edit "$DAILY_TAG" --draft=false --prerelease --latest=false

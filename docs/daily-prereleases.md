@@ -27,6 +27,11 @@ reviewed source normally and revise the lane's branch guards and fetch ref.
    `v6.1.0-daily.B` tags. Existing VRR mappings are unchanged. A future manual VRR
    release must map strictly above the largest daily build; coordinate manual
    release publication with this lane to avoid competing version reservations.
+   The reusable Windows workflow rejects a VRR build whose existing mapping is
+   equal to or lower than any tagged daily version; it does not remap VRR tags.
+   Known historical tags `v6.1.0-vrr` and `v6.1.0-vrr9.1.1` have no recognized
+   mapping and currently block daily allocation. Confirm their actual shipped
+   PE/MSI versions and encode reviewed history before the first hosted dry run.
    Newer base-version tags, unknown custom tags, or build >65535 block allocation
    and require explicit version migration. Untagged installed custom versions
    must be accounted for before activation.
@@ -42,7 +47,9 @@ reviewed source normally and revise the lane's branch guards and fetch ref.
 Every run resolves remote master once and passes the immutable SHA to the build.
 Publication uses that SHA as the tag target. The serialized daily lane rechecks
 remote tags after builds; changed history or an existing release stops the run.
-It creates a draft prerelease, uploads only the Burn EXE, x64 portable ZIP and
+Draft verification requires draft/prerelease flags and the immutable source
+target, and checks the dereferenced tag only when that tag exists. Draft creation
+may defer tag creation until publication. It uploads only the Burn EXE, x64 portable ZIP and
 SHA256SUMS, downloads them to verify hashes, then publishes with `--latest=false`.
 A failed upload leaves a draft for review. A rerun never replaces existing assets;
 start a fresh run to allocate a new build after resolving a failed draft.

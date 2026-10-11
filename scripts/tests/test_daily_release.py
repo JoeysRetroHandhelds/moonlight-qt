@@ -15,9 +15,26 @@ class DailyVersionTests(unittest.TestCase):
         self.assertEqual(module.next_version(['v6.1.0-daily.999']), '6.1.0-daily.1000')
     def test_boundary_and_migration_fail_closed(self):
         self.assertEqual(module.next_version(['v6.1.0-daily.65534']), '6.1.0-daily.65535')
-        for tags in (['v6.1.0-daily.65535'], ['v6.3.0'], ['v6.1.0-vrr18-bad'], ['v6.1.0-daily.bad']):
+        for tags in (['v6.1.0-daily.65535'], ['v6.3.0'], ['v6.1.0-vrr18-bad'], ['v6.1.0-daily.bad'], ['v6.1.0-rc1'], ['v6.1.0-vrr'], ['v6.1.0-vrr9.1.1']):
             with self.subTest(tags=tags), self.assertRaises(ValueError):
                 module.next_version(tags)
+    def test_draft_without_tag_is_valid_but_wrong_state_or_target_is_blocked(self):
+        release = dict(isDraft=True, isPrerelease=True, targetCommitish='a' * 40, tagName='v6.1.0-daily.181')
+        module.verify_draft(release, 'a' * 40, release['tagName'])
+        module.verify_draft(release, 'a' * 40, release['tagName'], 'a' * 40)
+        for key, value in [('isDraft', False), ('isPrerelease', False), ('targetCommitish', 'master'), ('tagName', 'stable')]:
+            with self.subTest(key=key), self.assertRaises(ValueError):
+                module.verify_draft(dict(release, **{key: value}), 'a' * 40, release['tagName'])
+        with self.assertRaises(ValueError):
+            module.verify_draft(release, 'a' * 40, release['tagName'], 'b' * 40)
+        workflow = (ROOT / '.github/workflows/daily-prerelease.yml').read_text(encoding='utf-8-sig')
+        self.assertIn('module.verify_draft(', workflow)
+        self.assertNotIn('test "$(git rev-list', workflow)
+    def test_future_vrr_cannot_reuse_or_downgrade_daily_windows_version(self):
+        module.check_vrr_version('6.1.0-vrr19', ['v6.1.0-daily.189'])
+        for tag in ('v6.1.0-daily.190', 'v6.1.0-daily.191', 'v6.1.0-daily.bad'):
+            with self.subTest(tag=tag), self.assertRaises(ValueError):
+                module.check_vrr_version('6.1.0-vrr19', [tag])
     @unittest.skipUnless(__import__('shutil').which('pwsh') or __import__('shutil').which('powershell'), 'PowerShell unavailable')
     def test_pe_mapping_preserves_vrr_and_enforces_daily_limits(self):
         import shutil
