@@ -186,7 +186,7 @@ jobs:
         run: |
           $deploy = (Resolve-Path build/deploy-x64-release).Path
           $env:Path = "$deploy;$env:QT_PATH;$env:Path"
-          foreach ($name in @('tst_calibrationhosts.exe', 'tst_toleranceinput.exe', 'tst_pyrowaveudpaddress.exe')) {
+          foreach ($name in @('tst_calibrationhosts.exe', 'tst_toleranceinput.exe', 'tst_pyrowaveudpaddress.exe', 'tst_pyrowaved3d11interop.exe')) {
             $test = @(Get-ChildItem build/tests-vrr -Recurse -Filter $name | Where-Object { $_.Directory.Name -eq 'release' })
             if ($test.Count -ne 1) { throw "Missing or ambiguous integrated test $name" }
             & $test[0].FullName

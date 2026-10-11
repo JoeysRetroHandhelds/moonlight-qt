@@ -10,6 +10,30 @@
 using namespace Overlay;
 
 namespace {
+// Keep every row and graph lane, shrinking the complete CPU surface only when
+// needed. This leaves graph-only and already-fitting overlays at native size.
+SDL_Surface* fitToOutput(SDL_Surface* surface, int width, int height)
+{
+    if (!surface || width <= 0 || height <= 0 ||
+            (surface->w <= width && surface->h <= height)) return surface;
+    const double scale = std::min(double(width) / surface->w, double(height) / surface->h);
+    const int fittedWidth = std::max(1, int(std::floor(surface->w * scale)));
+    const int fittedHeight = std::max(1, int(std::floor(surface->h * scale)));
+    auto* fitted = SDL_CreateRGBSurfaceWithFormat(0, fittedWidth, fittedHeight,
+                                                  surface->format->BitsPerPixel, surface->format->format);
+    if (fitted) {
+        // Copy alpha together with color rather than blending into an empty
+        // surface; the backend performs the final alpha composition.
+        SDL_SetSurfaceBlendMode(surface, SDL_BLENDMODE_NONE);
+        if (SDL_BlitScaled(surface, nullptr, fitted, nullptr) != 0) {
+            SDL_FreeSurface(fitted);
+            fitted = nullptr;
+        }
+    }
+    SDL_FreeSurface(surface);
+    return fitted;
+}
+
 // CPU rasterization runs on the overlay worker. All backends receive the same
 // composed surface through their current overlay upload path; no GPU API work
 // or text rendering happens on the frame path.
@@ -478,8 +502,10 @@ void OverlayManager::setOutputSize(int width, int height)
     {
         std::lock_guard<std::mutex> lock(m_StateLock);
         auto& stats = m_Overlays[OverlayDebug];
-        if (stats.fontSize == fontSize) return;
+        if (stats.fontSize == fontSize && stats.outputWidth == width && stats.outputHeight == height) return;
         stats.fontSize = fontSize;
+        stats.outputWidth = width;
+        stats.outputHeight = height;
         ++stats.revision;
         stats.dirty = true;
         stats.queued = std::chrono::steady_clock::now();
@@ -548,7 +574,7 @@ void OverlayManager::run()
         OverlayType type;
         char text[1024];
         bool enabled, drawText;
-        int fontSize;
+        int fontSize, outputWidth, outputHeight;
         std::shared_ptr<const TimingGraphSnapshot> graph;
         uint64_t revision;
         Clock::time_point queued;
@@ -571,6 +597,8 @@ void OverlayManager::run()
             enabled = overlay.enabled;
             drawText = enabled && overlay.text[0] && (type != OverlayDebug || m_StatsEnabled);
             fontSize = overlay.fontSize;
+            outputWidth = overlay.outputWidth;
+            outputHeight = overlay.outputHeight;
             revision = overlay.revision;
             queued = overlay.queued;
             SDL_memcpy(text, overlay.text, sizeof(text));
@@ -596,6 +624,7 @@ void OverlayManager::run()
             }
             if (drawGraph && overlay.font) surface = composeTimingGraph(overlay.font, surface, *graph, scale);
         }
+        if (type == OverlayDebug) surface = fitToOutput(surface, outputWidth, outputHeight);
         const auto rasterized = Clock::now();
         std::lock_guard<std::mutex> rendererLock(m_RendererLock);
         bool publish;

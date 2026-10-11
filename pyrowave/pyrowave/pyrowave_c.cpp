@@ -6,6 +6,7 @@
 #include "image.hpp"
 #include "buffer.hpp"
 #include "pyrowave.h"
+#include "pyrowave_d3d11_interop.hpp"
 #include "pyrowave_decoder.hpp"
 #include "pyrowave_encoder.hpp"
 #include "logging.hpp"
@@ -397,6 +398,30 @@ static bool pyrowave_device_confirm_external_memory_support(pyrowave_device devi
 	}
 
 	return true;
+}
+
+bool pyrowave_device_confirm_d3d11_interop_support(pyrowave_device device, VkFormat format, const char **reason)
+{
+    const char *failure = "D3D11 interop requires Windows";
+#ifdef _WIN32
+    if (!device) failure = "missing Vulkan device";
+    else if (!vkGetPhysicalDeviceExternalSemaphoreProperties || !vkGetPhysicalDeviceImageFormatProperties2)
+        failure = "external image/semaphore query unavailable";
+    else failure = PyroWave::checkD3D11Interop(format,
+        device->device.get_device_features().supports_external,
+        [&](VkFormat f, VkImageType type, VkImageTiling tiling, VkImageUsageFlags usage,
+            VkImageCreateFlags flags, const VkPhysicalDeviceExternalImageFormatInfo *external,
+            VkImageFormatProperties2 *properties) {
+            return device->device.get_image_format_properties(f, type, tiling, usage, flags, external, properties);
+        },
+        [&](const VkPhysicalDeviceExternalSemaphoreInfo *info, VkExternalSemaphoreProperties *properties) {
+            vkGetPhysicalDeviceExternalSemaphoreProperties(device->device.get_physical_device(), info, properties);
+        });
+#else
+    (void)device; (void)format;
+#endif
+    if (reason) *reason = failure;
+    return failure == nullptr;
 }
 
 bool pyrowave_device_confirm_interop_support(pyrowave_device device)

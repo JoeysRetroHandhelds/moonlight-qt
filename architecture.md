@@ -5361,3 +5361,36 @@ and worker tests but no live capture yet; Windows and native scheduled
 presentation share the code but were not live-tested. Tests: all 26 VRR suites
 pass, and the pacing worker passes with default, `MOONLIGHT_VRR_BOUNDED_CATCHUP=0`
 and `=1`.
+
+### Windows PyroWave NT-handle qualification (2026-10-11)
+
+The integrated primary includes the exact two-line compatibility correction from
+PR #11 (source c4a679fb): unused D3D11_TEXTURE_KMT and OPAQUE_WIN32_KMT memory
+handles no longer gate capability detection. Used D3D11_TEXTURE, D3D12_RESOURCE
+and OPAQUE_WIN32 NT imports still require importable image formats. Opaque NT
+binary/timeline semaphore and D3D12-fence importability checks remain mandatory.
+Linux opaque-FD/DMA-BUF checks are unchanged. A nightly preparation regression
+rejects the original NT-only-driver failure without weakening required imports.
+This source/contract verification does not establish Arc hardware decoding;
+actual GPU interoperability remains a separate runtime qualification.
+
+The Windows decoder and calibration now use a separate D3D11-specific predicate.
+It queries the active R8/R16 optimal storage/sampled D3D11 NT texture format and
+legacy D3D12-fence importability, requiring enabled external Win32 extensions and
+available query functions. Generic consumers retain the broader NT memory and
+semaphore checks. Calibration adapter selection accepts either plane family;
+each SDR/HDR format is checked again in the actual decoder initialization.
+Existing DXGI/Vulkan LUID selection, texture/shared-handle/import/bind/fence errors
+remain fail-closed. Mock queries reject missing features/formats/importability and
+accept NT-only drivers despite unsupported unrelated D3D12_RESOURCE/KMT images.
+Hardware evidence on UHD770 establishes the actual R8/R16 texture and timeline
+fence imports; full decoding/streaming and Arc B390 remain separate qualifications.
+
+Integrated overlay-fit recovery (2026-10-11): retaining host smoothness adds a
+normal-overlay row. The combined graph/text surface exceeded the 1280x800 Deck
+viewport in the cross-platform fit fixture. Output bounds now accompany each
+coalesced worker revision, including same-font viewport changes. The CPU worker
+uniformly scales the complete surface only if it exceeds either bound, preserving
+all text/lanes and alpha without cropping; graph-only/already-fitting overlays
+keep their native size. The meaningful Deck/4K fit assertions remain mandatory.
+No GPU work or rasterization was moved into the streaming frame path.
