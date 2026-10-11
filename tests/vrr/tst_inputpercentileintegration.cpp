@@ -44,6 +44,45 @@ void testVrrHeadroomAbsorbsLateness() {
     floor.creditHeadroom(3000);
     check(floor.stats().currentUs==6000,"credit removes exactly the gained headroom above the floor");
 }
+void testPhaseBreakKeepsEvidenceAndHeadroomLossRestores() {
+    const auto observe=[](InputPercentileBuffer& p,uint64_t frame,int64_t required,uint64_t headroom) {
+        p.observe(frame,frame*8333,1000000+frame*8333,required,true,1000,12000,995000,200000000,
+                  1000000,250,0,500,headroom);
+    };
+    InputPercentileBuffer p;p.reset(1000);
+    for(uint64_t f=1;f<=400;++f) observe(p,f,f%50==0?7000:2000,0);
+    const auto before=p.stats();
+    p.breakAdjacency();
+    const auto after=p.stats();
+    check(after.samples==before.samples && after.recentEligible==before.recentEligible &&
+          after.recentMissed==before.recentMissed && after.targetUs==before.targetUs && after.epochResets==before.epochResets,
+          "a phase discontinuity keeps evidence, coverage outcomes and target");
+    observe(p,402,2000,0);
+    check(p.stats().samples==before.samples+1,"observation after a phase break extends the same history");
+    // Headroom loss steps current to the evidence-backed target, bounded by the loss.
+    InputPercentileBuffer q;q.reset(1000);
+    for(uint64_t f=1;f<=400;++f) observe(q,f,f%50==0?7000:2000,0);
+    q.creditHeadroom(25000);
+    check(q.stats().currentUs==1000,"headroom gained at 30 FPS credits protection to the floor");
+    q.advance(400*8333+1,1000,12000,995000,200000000,1000000,250,0,500,0);
+    const auto target=q.stats().targetUs;
+    q.raiseForHeadroomLoss(2000);
+    check(q.stats().currentUs==3000,"a small headroom loss raises current by exactly the loss");
+    q.raiseForHeadroomLoss(25000);
+    check(q.stats().currentUs==target && target==6500,"a large loss stops at the evidence-backed target");
+    q.raiseForHeadroomLoss(25000);
+    check(q.stats().currentUs==target,"current never exceeds the target through a headroom loss");
+    // A new rate layer is seeded with copied evidence: it sets the target, but
+    // the other rate's outcomes leave coverage and expire without underflow.
+    InputPercentileBuffer seeded=p;seeded.markEvidenceAsSeed();
+    check(seeded.stats().recentEligible==0 && seeded.stats().recentMissed==0 &&
+          seeded.stats().samples==p.stats().samples,"seeded evidence keeps samples but no coverage outcomes");
+    observe(seeded,403,2000,0);
+    check(seeded.stats().recentEligible==1 && seeded.stats().targetUs==p.stats().targetUs,
+          "the new layer's own frames are its coverage while the seed still sets the target");
+    seeded.advance(403*8333+200000001,1000,12000,995000,200000000,1000000,250,0,500,0);
+    check(seeded.stats().recentEligible==0 && seeded.stats().samples==0,"expired seed and own samples leave counts consistent");
+}
 void testQuantileAndClock() {
     InputPercentileBuffer p;
     check(p.demand(1600)==1600,"uninitialized helper preserves caller delay");
@@ -152,8 +191,27 @@ void testInputToleranceBoundaryAndNormalization() {
     check(p.stats().targetUs==0 && p.stats().missed==0,
         "maximum tolerance and buffer do not wrap the accepted boundary into a miss");
 }
-void testSlewBoundsAndReset() {
+void testStartupLearning() {
     InputPercentileBuffer p;p.reset(0);
+    check(p.learning(),"a fresh buffer starts learning");
+    feed(p,1,1000000,1000000,9000,false);
+    check(p.demand(0)==0,"learning never grows from ineligible input");
+    p.advance(1050000);
+    check(p.demand(0)==0,"learning never grows at decision time");
+    feed(p,2,1100000,1100000,2000);
+    check(p.demand(0)==2000,"before the tail is supported, protection follows the largest eligible requirement at once");
+    feed(p,3,1110000,1110000,3500);
+    check(p.demand(0)==3500 && p.learning(),"a larger requirement while learning is protected at once");
+    for(uint64_t i=4;i<=101;++i) feed(p,i,1110000+i*1000,1110000+i*1000,500);
+    check(!p.learning() && !p.stats().tailUncertain,"a supported profile tail ends learning");
+    const auto held=p.demand(0);
+    feed(p,102,1300000,1300000,6000);feed(p,103,1400000,1400000,6000);
+    check(p.demand(0)>held && p.demand(0)<=held+101,"after learning, growth is slewed at 1000 us per second");
+    p.breakSequence();
+    check(p.learning(),"a source rebase discards evidence and relearns");
+}
+void testSlewBoundsAndReset() {
+    InputPercentileBuffer p;p.reset(0);p.endLearning();
     feed(p,1,1000000,1000000,2000);feed(p,2,1100000,1100000,2000);
     check(p.demand(0)==100,"experimental upward slew is 1000 us per second");
     p.reset(1000);feed(p,1,1000000,1000000,0);feed(p,2,1100000,1100000,0);
@@ -238,7 +296,7 @@ void testHistoryAgingWithoutEligibleInput() {
         "strict profile probability applies to retained history even with no new eligible input");
 }
 void testNoRunawayAndQualifiedGrowth() {
-    InputPercentileBuffer p;p.reset(0);
+    InputPercentileBuffer p;p.reset(0);p.endLearning();
     feed(p,0,1000000,1000000,4000,true,990000,10000000);
     p.advance(1100000);
     check(p.stats().targetUs==4000 && p.demand(0)==0 && p.stats().growthBlocked,"decision advance cannot raise buffer from retained high input requirements");
@@ -247,7 +305,7 @@ void testNoRunawayAndQualifiedGrowth() {
         !p.stats().lastInputEligible && p.stats().lastInputRequiredUs==9000 && p.stats().lastInputObservationUs==1200000,"invalid overloaded input cannot raise buffer from historical high target");
     feed(p,2,1300000,1020000,4000,true,990000,10000000);
     check(p.demand(0)==100 && !p.stats().growthBlocked && p.stats().lastInputEligible,"qualified observation grows only for its bounded observation interval, without banked invalid time");
-    p.reset(0);feed(p,0,1000000,1000000,4000,true,990000,10000000);
+    p.reset(0);p.endLearning();feed(p,0,1000000,1000000,4000,true,990000,10000000);
     for(uint64_t i=1;i<=120;++i) {
         const uint64_t at=1000000+i*8333;
         p.advance(at);feed(p,i,at,at,4000,true,990000,10000000);
@@ -341,6 +399,57 @@ void testFactoryProfileOwnsAdaptiveTarget() {
         check(policy.playoutInputPercentileWindowUs==uint64_t(session.timingOptions.resolved(1).historySeconds)*1000000,
             "adaptive profile history includes exact supported bounds and lower/upper clamping");
     }
+}
+void testActualControllerRateBandsRestoreProtection() {
+    // The user's round trip: 120 FPS needs buffer, 30 FPS needs none (and has
+    // less lateness, as in the 22:55 capture), then back to 120 FPS.
+    VrrSessionConfig session;session.streamRateHz=120;session.displayRefreshHz=144;
+    session.smoothFrameTiming=false;session.experimentalInputPercentilePpm=995000;
+    session.timingOptions={1000,9950,60,500};
+    auto policy=vrrTimingParametersForSession(session);
+    policy.playoutDelayStartSeedUs=1000;policy.playoutDelayMinimumUs=1000;policy.playoutDelayMaximumUs=12000;
+    policy.playoutDelayMaximumPeriodPerMille=0;policy.playoutDelayCapSourcePeriodPerMille=0;
+    VrrTimingController controller(session,true,policy);
+    uint64_t submitted=0,slot=1000000,pts=0;int i=0;
+    const auto run=[&](int frames,uint64_t periodUs,uint32_t ptsStep,uint64_t spikeUs) {
+        for(int n=0;n<frames;++n,++i) {
+            slot+=periodUs;pts+=ptsStep;
+            const uint64_t decoded=slot+1000+(i%20==0?spikeUs:0);
+            PacedFrame f(nullptr,i,uint32_t(pts),true,decoded);
+            f.setDeliveryTimeline(decoded-800,decoded-600,decoded-500);
+            const auto decision=controller.schedule(f,std::max(decoded,submitted));
+            const uint64_t ready=std::max(decoded,decision.renderStartUs)+500;
+            submitted=std::max(ready,decision.targetUs);
+            controller.notePreparationDuration(500,0,ready);
+            controller.noteSchedulerDelays(0,0,true);
+            controller.noteSubmission(true,false,submitted,submitted);
+        }
+    };
+    run(2400,8333,750,5000);
+    const auto fast=controller.intervalStats().inputPercentile;
+    run(600,33333,3000,1000);
+    const auto slow=controller.intervalStats().inputPercentile;
+    run(36,8333,750,5000);
+    const auto back=controller.intervalStats().inputPercentile;
+    run(564,8333,750,5000);
+    const auto settled=controller.intervalStats().inputPercentile;
+    const uint64_t missedBack=settled.missed-slow.missed,eligibleBack=settled.eligible-slow.eligible;
+    std::fprintf(stderr,"rate bands: 120 FPS current %llu target %llu; 30 FPS current %llu; back +36 frames current %llu; "
+        "missed after return %llu of %llu; coverage %llu/%llu\n",
+        (unsigned long long)fast.currentUs,(unsigned long long)fast.targetUs,(unsigned long long)slow.currentUs,
+        (unsigned long long)back.currentUs,(unsigned long long)missedBack,(unsigned long long)eligibleBack,
+        (unsigned long long)(settled.recentEligible-settled.recentMissed),(unsigned long long)settled.recentEligible);
+    check(settled.eligible>=slow.eligible && slow.eligible>=fast.eligible && settled.missed>=slow.missed,
+          "session totals continue across rate-band layers");
+    check(fast.currentUs>2000,"fixture: 120 FPS jitter needs real buffer");
+    check(slow.currentUs<fast.currentUs,"30 FPS headroom releases protection");
+    check(slow.recentEligible>0 && slow.recentEligible<=600 && slow.recentMissed==0,
+          "the 30 FPS layer's coverage counts only its own frames");
+    check(back.currentUs+250>=fast.currentUs,"returning to 120 FPS restores that band's protection within a few frames");
+    check(eligibleBack>400 && missedBack*200<=eligibleBack,
+          "frames after the return are covered at the profile target, not relearned through misses");
+    check((settled.recentEligible-settled.recentMissed)*1000>=settled.recentEligible*995,
+          "coverage after the return keeps the band's history instead of restarting from misses");
 }
 void testActualControllerInputMissReleaseFeedbackApi() {
     VrrSessionConfig session;session.streamRateHz=60;session.displayRefreshHz=120;
@@ -499,12 +608,13 @@ void testActualControllerOptInAndEligibility() {
 
 }
 int main() {
-    testVrrHeadroomAbsorbsLateness();
+    testVrrHeadroomAbsorbsLateness();testPhaseBreakKeepsEvidenceAndHeadroomLossRestores();testStartupLearning();
     testQuantileAndClock();testBudgetAndSignedOffsets();testInputToleranceBoundaryAndNormalization();testSlewBoundsAndReset();
     testInvalidCapacityAndExpiry();testProbabilitySupportAndCap();testHistoryAgingWithoutEligibleInput();testNoRunawayAndQualifiedGrowth();testUnthrottledInputPercentileRelease();
 #ifdef INPUT_PERCENTILE_CONTROLLER_TEST
     testFactoryProfileOwnsAdaptiveTarget();
     testActualControllerOptInAndEligibility();
+    testActualControllerRateBandsRestoreProtection();
     testActualControllerInputMissReleaseFeedbackApi();
     testActualControllerRepeatedZeroTimestampDrops();
     testActualControllerPostInputErrorsCannotInflateBuffer();

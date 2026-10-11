@@ -5250,12 +5250,33 @@ start-delay seed restored) still reproduces every decision.
 unbuffered source slot. Each requirement subtracts the profile tolerance once and
 the VRR recovery headroom (`recoveryHeadroomUs()`: source period minus the larger
 of display period and typical render), so a lower frame rate never needs more
-buffer than a higher one for the same jitter. A source-rate change that gains
-headroom credits it immediately; previously protection learned at 30 FPS (25 ms)
-was held for about a minute after returning to 110 FPS while evidence
-requalified. Eligible evidence rises at 1000 us/s and falls at 250 us/s; packet
-loss, overload and invalid mappings are ineligible. The overlay labels this
-"Adaptive buffer".
+buffer than a higher one for the same jitter. Once learned, eligible evidence
+rises at 1000 us/s and falls at 250 us/s; packet loss, overload and invalid
+mappings are ineligible. The overlay shows the buffer with its target and
+coverage with its target on one line.
+
+**Rate layers and learning.** Lateness itself depends on the rate (22:55
+capture: median 2.9 ms at 110 FPS, -0.35 ms at 30 FPS), so the controller keeps
+one buffer layer per source-rate range: a rate within 15% of a layer's anchor
+period shares it. Each layer keeps its own evidence, protection and coverage. A
+rate seen before resumes its layer at once; a new rate starts from the previous
+layer's evidence (seeding its target, not its coverage), rescaled by the VRR
+headroom floor in both directions: gained headroom is credited, lost headroom is
+restored up to the evidence-backed target. Any step coincides with the cadence
+change. A layer that saw fewer than 30 eligible frames was a rate the detector
+passed through and is discarded; at most eight layers are kept, and a layer whose
+evidence aged out of its history is forgotten. A phase discontinuity only breaks
+adjacency (lateness keeps its level across it); a rebase still clears evidence in
+every layer and keeps protection. Until a layer's profile tail is first
+supported (and again after a rebase), protection follows the largest eligible
+requirement at once instead of rising at 1000 us/s. Previously every rate change
+and phase discontinuity cleared the evidence: back at 110 FPS after 30 FPS the
+buffer relearned from 1 ms, 198 of the first 200 frames missed and coverage
+restarted near 1%. On the recorded 22:55 lateness (open-loop replay of the buffer;
+lateness against the unbuffered slot does not depend on it) the return misses 26
+instead of 215 frames in its first 5 s with coverage at 97.7%, the first 10 s of
+the session miss 8 instead of 165, and the session 169 instead of 625; the steady
+22:48 session misses 56 instead of 198.
 
 **Producer clock.** Source time maps to reassembly + (decode completion − decode
 submission): our own decoder queue and deliberate decode hold are excluded, the

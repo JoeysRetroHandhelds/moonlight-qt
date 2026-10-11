@@ -760,8 +760,22 @@ private:
     Vrr13::MeanMissBuffer m_MeanMissBuffer;
     Vrr13::IntervalBuffer m_IntervalBuffer;
     Vrr13::InputPercentileBuffer m_InputPercentileBuffer;
-    // VRR headroom last applied to the input buffer; credited on rate change.
+    // VRR headroom last applied to the input buffer; rescaled on rate change.
     uint64_t m_InputHeadroomUs = 0;
+    // Layered input buffers, one per source-rate range. Lateness depends on
+    // the rate (2026-10-10 22:55: median 2.9 ms at 110 FPS, -0.35 ms at
+    // 30 FPS), so each layer keeps its own evidence, protection and coverage.
+    // The active layer lives in m_InputPercentileBuffer, anchored at
+    // m_InputLayerPeriodUs; stored layers wait for their rate to return.
+    struct InputLayer {
+        uint64_t periodUs = 0;
+        Vrr13::InputPercentileBuffer buffer;
+    };
+    enum class InputLayerChange { None, Restored, Created };
+    std::vector<InputLayer> m_InputLayers;
+    uint64_t m_InputLayerPeriodUs = 0;
+    uint64_t m_InputLayerEligibleAtStart = 0;
+    InputLayerChange updateInputLayer(uint64_t nowUs);
     // Exact GPU decode durations (decoder output -> completion) from frames
     // the worker blocked on; their median estimates unobserved completions.
     std::array<uint64_t, 64> m_DecodeGpuSamples {};

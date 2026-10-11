@@ -503,6 +503,8 @@ void VrrTimingController::clearTimeline(bool retainLearnedBudgets)
     m_MeanMissBuffer.breakSequence();
     m_IntervalBuffer.breakSequence();
     m_InputPercentileBuffer.breakSequence();
+    // A rebase moves the slot basis for every rate layer's evidence alike.
+    for (auto& layer : m_InputLayers) layer.buffer.breakSequence();
     m_PresentationPrediction.reset();
     m_PresentTiming.breakSequence();
     m_SubmissionCadence.breakSequence();
@@ -517,6 +519,9 @@ void VrrTimingController::clearTimeline(bool retainLearnedBudgets)
         m_IntervalBuffer.reset();
         m_InputPercentileBuffer = Vrr13::InputPercentileBuffer{};
         m_InputHeadroomUs = 0;
+        m_InputLayers.clear();
+        m_InputLayerPeriodUs = 0;
+        m_InputLayerEligibleAtStart = 0;
         m_PresentTiming.reset();
         m_SubmissionCadence.reset();
         m_DisplayCadence.reset();
@@ -3103,6 +3108,74 @@ uint64_t VrrTimingController::playoutDelayUs() const
     return std::min(delayUs, playoutDelayCapUs());
 }
 
+namespace {
+// A rate within 15% of a layer's anchor shares its evidence: 100 and 116 FPS
+// share a layer, 60 and 120 FPS do not.
+constexpr uint64_t kInputLayerSpreadPerMille = 150;
+// A layer that saw fewer eligible frames while active was a rate the detector
+// passed through during a change; it is discarded rather than stored.
+constexpr uint64_t kInputLayerMinimumFrames = 30;
+constexpr size_t kInputLayersStored = 8;
+}
+
+VrrTimingController::InputLayerChange VrrTimingController::updateInputLayer(uint64_t nowUs)
+{
+    const uint64_t periodUs = m_SourcePeriodUs;
+    const auto distance = [periodUs](uint64_t anchorUs) {
+        return periodUs > anchorUs ? periodUs - anchorUs : anchorUs - periodUs;
+    };
+    const auto within = [&distance](uint64_t anchorUs) {
+        return distance(anchorUs) * 1000 <= anchorUs * kInputLayerSpreadPerMille;
+    };
+    if (periodUs == 0) return InputLayerChange::None;
+    if (m_InputLayerPeriodUs == 0) {
+        m_InputLayerPeriodUs = periodUs;
+        return InputLayerChange::None;
+    }
+    if (within(m_InputLayerPeriodUs)) return InputLayerChange::None;
+
+    // Layers whose evidence has aged out of their history are forgotten.
+    for (auto it = m_InputLayers.begin(); it != m_InputLayers.end();) {
+        const auto stats = it->buffer.stats();
+        const uint64_t lastUs = stats.lastInputObservationUs;
+        if (!lastUs || (nowUs > lastUs && nowUs - lastUs >= stats.windowUs)) it = m_InputLayers.erase(it);
+        else ++it;
+    }
+    auto stored = m_InputLayers.end();
+    for (auto it = m_InputLayers.begin(); it != m_InputLayers.end(); ++it) {
+        if (within(it->periodUs) && (stored == m_InputLayers.end() ||
+                distance(it->periodUs) < distance(stored->periodUs))) stored = it;
+    }
+    const bool restored = stored != m_InputLayers.end();
+    Vrr13::InputPercentileBuffer next;
+    uint64_t nextPeriodUs = periodUs;
+    if (restored) {
+        next = std::move(stored->buffer);
+        nextPeriodUs = stored->periodUs;
+        m_InputLayers.erase(stored);
+        next.continueTotalsFrom(m_InputPercentileBuffer);
+    }
+    else {
+        next = m_InputPercentileBuffer;
+        next.markEvidenceAsSeed();
+    }
+    const bool settled = m_InputPercentileBuffer.stats().eligible >=
+        m_InputLayerEligibleAtStart + kInputLayerMinimumFrames;
+    if (settled) {
+        if (m_InputLayers.size() >= kInputLayersStored) {
+            m_InputLayers.erase(std::min_element(m_InputLayers.begin(), m_InputLayers.end(),
+                [](const InputLayer& a, const InputLayer& b) {
+                    return a.buffer.stats().lastInputObservationUs < b.buffer.stats().lastInputObservationUs;
+                }));
+        }
+        m_InputLayers.push_back({m_InputLayerPeriodUs, std::move(m_InputPercentileBuffer)});
+    }
+    m_InputPercentileBuffer = std::move(next);
+    m_InputLayerPeriodUs = nextPeriodUs;
+    m_InputLayerEligibleAtStart = m_InputPercentileBuffer.stats().eligible;
+    return restored ? InputLayerChange::Restored : InputLayerChange::Created;
+}
+
 unsigned int VrrTimingController::playoutBandIndex() const
 {
     return m_PlayoutBandValid ? m_PlayoutBandIndex : 0;
@@ -3554,20 +3627,37 @@ void VrrTimingController::updatePlayoutHistory(
     if (m_Parameters.playoutPredictionOnly) {
         if (m_Parameters.playoutResponsiveBuffer >= 5) {
             if (m_Parameters.playoutInputPercentileEnabled) {
-                if (!m_InputPercentileBuffer.stats().initialized)
+                const uint64_t vrrHeadroomUs = recoveryHeadroomUs();
+                if (!m_InputPercentileBuffer.stats().initialized) {
                     m_InputPercentileBuffer.reset(m_AppliedPlayoutDelayUs);
-                else if (rebased || cadence.sourceRateChanged || cadence.phaseDiscontinuity) {
+                    m_InputLayerPeriodUs = m_SourcePeriodUs;
+                    m_InputLayerEligibleAtStart = 0;
+                }
+                else if (rebased) {
                     m_InputPercentileBuffer.breakSequence();
                     // Requalify capacity without erasing the measured long score.
                     m_IntervalBuffer.breakSequence();
                 }
-                // A rate that frees VRR headroom needs correspondingly less
-                // buffer. Credit it now: after breakSequence() the target is
-                // frozen until requalified evidence returns, which held 23 ms
-                // learned at 30 FPS for a minute after returning to 110 FPS.
-                const uint64_t vrrHeadroomUs = recoveryHeadroomUs();
-                if (cadence.sourceRateChanged && vrrHeadroomUs > m_InputHeadroomUs)
-                    m_InputPercentileBuffer.creditHeadroom(vrrHeadroomUs - m_InputHeadroomUs);
+                else if (cadence.sourceRateChanged || cadence.phaseDiscontinuity) {
+                    // Clearing the evidence here made every return to a rate
+                    // relearn from nothing at 1 ms/s: 198 of the first 200
+                    // frames back at 110 FPS missed (22:55 capture).
+                    m_InputPercentileBuffer.breakAdjacency();
+                    m_IntervalBuffer.breakSequence();
+                }
+                // A rate seen before resumes its own layer's evidence,
+                // protection and coverage at once. A new rate starts from the
+                // previous layer's evidence rescaled by the VRR headroom floor,
+                // in both directions: gained headroom is credited, lost
+                // headroom is restored up to the evidence-backed target.
+                uint64_t lostHeadroomUs = 0;
+                const auto layerChange = updateInputLayer(nowUs);
+                if (layerChange == InputLayerChange::Created ||
+                        (layerChange == InputLayerChange::None && cadence.sourceRateChanged)) {
+                    if (vrrHeadroomUs > m_InputHeadroomUs)
+                        m_InputPercentileBuffer.creditHeadroom(vrrHeadroomUs - m_InputHeadroomUs);
+                    else lostHeadroomUs = m_InputHeadroomUs - vrrHeadroomUs;
+                }
                 m_InputHeadroomUs = vrrHeadroomUs;
                 // Retire expired evidence at the decision, including the first
                 // frame after quiet time; this adds no new jitter observation.
@@ -3578,6 +3668,7 @@ void VrrTimingController::updatePlayoutHistory(
                     m_Parameters.playoutInputPercentileFallUsPerSecond,
                     m_ReadinessBudgetUs, m_Parameters.playoutInputPercentileToleranceUs,
                     vrrHeadroomUs);
+                m_InputPercentileBuffer.raiseForHeadroomLoss(lostHeadroomUs);
                 const uint64_t demand = m_InputPercentileBuffer.demand(m_AppliedPlayoutDelayUs);
                 m_UnclampedRequestedPlayoutDelayUs = m_InputPercentileBuffer.stats().clipped ?
                     m_InputPercentileBuffer.stats().headroomTargetUnclippedUs : demand;

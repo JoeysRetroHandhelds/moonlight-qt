@@ -60,6 +60,13 @@ public:
         m_Stats.currentUs = m_Stats.targetUs = current;
         m_Stats.initialized = true;
     }
+    // Until the profile tail is first supported, protection follows the
+    // largest eligible requirement at once instead of rising at 1 ms/s. The
+    // slow ramp missed 144 and 165 frames in the first 10 s of the 2026-10-10
+    // 22:48/22:55 sessions; tracking the maximum missed 8 and 16.
+    // A buffer resumed from evidence it already trusts skips learning.
+    void endLearning() { m_Learning = false; }
+    bool learning() const { return m_Learning; }
     // A changed source phase, cadence, or normalized-input basis invalidates
     // prior requirements. Retain current protection while relearning its size.
     void breakSequence() {
@@ -73,12 +80,47 @@ public:
         m_Stats.tailUncertain = true;
         m_Stats.evidenceValid = m_Stats.historyTruncated = m_Stats.clipped = false;
         ++m_Stats.epochResets;
+        m_Learning = true;
         m_LastEvaluationUs = m_LastTruncatedUs = m_ReleaseFraction = 0;
         m_PreviousValid = false;
         m_Direction = 0;
         ++m_Epoch;
         // Keep elapsed/last-eligible clocks and diagnostics: recurring phase
         // breaks must not rearm the unknown-evidence retention window forever.
+    }
+    // A source phase discontinuity keeps the slot basis: input lateness keeps
+    // its level across it (2026-10-10 22:55 capture: median 3.10 -> 3.16 ms).
+    // Only frame adjacency breaks; evidence and coverage outcomes are kept.
+    void breakAdjacency() {
+        m_PreviousValid = false;
+        ++m_Epoch;
+    }
+    // A new rate layer starts from a copy of its neighbour's evidence. The
+    // copied requirements seed its target; their outcomes belonged to the
+    // other rate, so they leave this layer's coverage.
+    void markEvidenceAsSeed() {
+        for (auto& sample : m_Samples) {
+            if (sample.seed) continue;
+            --m_Stats.recentEligible;
+            m_Stats.recentAbsorbed -= sample.absorbed;
+            m_Stats.recentMissed -= sample.missed;
+            sample.seed = true;
+            sample.absorbed = sample.missed = false;
+        }
+    }
+    // Session totals and stage diagnostics continue across rate-band layers;
+    // evidence, protection and coverage outcomes stay with each band.
+    void continueTotalsFrom(const InputPercentileBuffer& previous) {
+        const auto& s = previous.m_Stats;
+        m_Stats.observed = s.observed; m_Stats.eligible = s.eligible; m_Stats.ineligible = s.ineligible;
+        m_Stats.absorbed = s.absorbed; m_Stats.missed = s.missed;
+        m_Stats.cumulativeNetworkMisses = s.cumulativeNetworkMisses;
+        m_Stats.cumulativeDecoderMisses = s.cumulativeDecoderMisses;
+        m_Stats.lastBufferMissUs = s.lastBufferMissUs;
+        m_Stats.lastNetworkMissUs = s.lastNetworkMissUs;
+        m_Stats.lastDecoderMissUs = s.lastDecoderMissUs;
+        m_Stats.raises = s.raises; m_Stats.lowers = s.lowers;
+        m_Stats.unknownRelease = s.unknownRelease; m_Stats.epochResets = s.epochResets;
     }
     // Source-rate change that gained VRR headroom: protection learned at the
     // old rate overstates what the new rate needs by exactly that gain.
@@ -89,6 +131,19 @@ public:
         };
         m_Stats.currentUs = reduce(m_Stats.currentUs);
         m_Stats.targetUs = reduce(m_Stats.targetUs);
+        m_ReleaseFraction = 0;
+    }
+    // Source-rate change that lost VRR headroom: the retained evidence already
+    // sets the target at the new rate (call after advance()), so step to it at
+    // once, by at most the loss, instead of rising at 1 ms/s and missing every
+    // frame meanwhile. The step coincides with the cadence change.
+    void raiseForHeadroomLoss(uint64_t lostUs) {
+        if (!m_Stats.initialized || !lostUs) return;
+        const uint64_t raised = std::min({m_Stats.targetUs, m_Stats.maximumUs,
+            m_Stats.currentUs + std::min(lostUs, m_Stats.maximumUs)});
+        if (raised <= m_Stats.currentUs) return;
+        m_Stats.currentUs = raised;
+        ++m_Stats.raises;
         m_ReleaseFraction = 0;
     }
     uint64_t demand(uint64_t applied) const {
@@ -195,6 +250,12 @@ public:
             changed = true;
         }
         evaluate(observationUs, changed);
+        if (m_Learning && eligible && m_Stats.targetUs > m_Stats.currentUs) {
+            m_Stats.currentUs = m_Stats.targetUs;
+            ++m_Stats.raises;
+            m_ReleaseFraction = 0;
+        }
+        if (m_Learning && m_Stats.samples && !m_Stats.tailUncertain) m_Learning = false;
         // Invalid observations discard growth time and fractional growth credit;
         // decision-time advance must neither grow nor consume observation time.
         if (!eligible && m_Stats.targetUs > m_Stats.currentUs) m_ReleaseFraction = 0;
@@ -229,9 +290,11 @@ private:
     }
     void removeFront() {
         const auto& sample = m_Samples.front();
-        --m_Stats.recentEligible;
-        m_Stats.recentAbsorbed -= sample.absorbed;
-        m_Stats.recentMissed -= sample.missed;
+        if (!sample.seed) {
+            --m_Stats.recentEligible;
+            m_Stats.recentAbsorbed -= sample.absorbed;
+            m_Stats.recentMissed -= sample.missed;
+        }
         m_Samples.pop_front();
     }
     bool expire(uint64_t atUs) {
@@ -296,7 +359,9 @@ private:
         }
         const uint64_t tail = 1000000 - probabilityPpm;
         const uint64_t needed = (1000000 + tail - 1) / tail;
-        if (removedSamples || !m_LastEvaluationUs || m_Samples.size() == needed ||
+        // Learning protects each new maximum at once, so it is not throttled;
+        // the history is still short (below the tail's supporting samples).
+        if (m_Learning || removedSamples || !m_LastEvaluationUs || m_Samples.size() == needed ||
             atUs - m_LastEvaluationUs >= 100000 ||
             m_EvaluatedProbabilityPpm != probabilityPpm || m_EvaluatedWindowUs != windowUs) {
             m_LastEvaluationUs = atUs;
@@ -368,7 +433,7 @@ private:
             }
         }
     }
-    struct Sample { uint64_t at, slot; int64_t required; uint64_t epoch; bool absorbed, missed; };
+    struct Sample { uint64_t at, slot; int64_t required; uint64_t epoch; bool absorbed, missed; bool seed = false; };
     std::deque<Sample> m_Samples;
     Stats m_Stats;
     uint64_t m_FirstObservationUs = 0, m_LastObservationUs = 0, m_LastEligibleUs = 0;
@@ -377,6 +442,7 @@ private:
     uint64_t m_PreviousFrame = 0, m_PreviousSlotUs = 0;
     uint64_t m_EvaluatedProbabilityPpm = 0, m_EvaluatedWindowUs = 0, m_ReleaseFraction = 0;
     bool m_PreviousValid = false;
+    bool m_Learning = true;
     int m_Direction = 0;
 };
 }
