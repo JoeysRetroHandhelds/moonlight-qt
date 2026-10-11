@@ -123,7 +123,7 @@ def moonlight_notes(repo, tag, version, previous, commits, compare, ancestor):
               '', '<details>', '<summary>Commit log</summary>', '']
     if previous:
         old_tag = previous['tag']
-        notes += [f'Changes since [{old_tag}](https://github.com/{repo}/releases/tag/{old_tag}) · [Compare]({compare})', '']
+        notes += [f'Changes since [{old_tag}](https://github.com/{repo}/releases/tag/{old_tag}) | [Compare]({compare})', '']
         if not ancestor:
             notes += ['Source history changed; this log lists newly reachable commits.', '']
     else:
