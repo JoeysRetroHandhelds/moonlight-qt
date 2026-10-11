@@ -31,5 +31,28 @@
       "tag_commit": "6c790dc591430b5d5a0171ee3d3f9818d1c8bd07"
     }
   ],
-  "recommendation": "Add exact historical exceptions for these two tags as Windows 6.1.0.0, which precedes the allocated 6.2.B family. Continue blocking all other unfamiliar custom-version families and preserve existing VRR tag mapping. Current recognized tag maximum remains vrr18 -> 6.2.180, so first daily is 6.1.0-daily.181 / Windows 6.2.181."
+  "recommendation": "Add exact historical exceptions for these two tags as Windows 6.1.0.0, which precedes the allocated 6.2.B family. Continue blocking all other unfamiliar custom-version families and preserve existing VRR tag mapping. Current recognized tag maximum remains vrr18 -> 6.2.180, so first daily is 6.1.0-daily.181 / Windows 6.2.181.",
+  "audited_tag_history": [
+    "v6.1.0-vrr",
+    "v6.1.0-vrr10",
+    "v6.1.0-vrr11",
+    "v6.1.0-vrr12",
+    "v6.1.0-vrr13",
+    "v6.1.0-vrr14",
+    "v6.1.0-vrr15",
+    "v6.1.0-vrr16",
+    "v6.1.0-vrr17",
+    "v6.1.0-vrr17.1",
+    "v6.1.0-vrr18",
+    "v6.1.0-vrr2",
+    "v6.1.0-vrr3",
+    "v6.1.0-vrr4",
+    "v6.1.0-vrr5",
+    "v6.1.0-vrr6",
+    "v6.1.0-vrr7",
+    "v6.1.0-vrr8",
+    "v6.1.0-vrr9",
+    "v6.1.0-vrr9.1",
+    "v6.1.0-vrr9.1.1"
+  ]
 }

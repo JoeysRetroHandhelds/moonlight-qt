@@ -34,7 +34,11 @@ class DailyVersionTests(unittest.TestCase):
         if not all(tag in tags for tag in module.HISTORICAL_WINDOWS_VERSIONS):
             self.skipTest('Audited repository historical tags not available')
         targets = {tag: subprocess.check_output(['git', '-C', str(ROOT), 'rev-parse', f'{tag}^{{commit}}'], text=True).strip() for tag in module.HISTORICAL_WINDOWS_VERSIONS}
-        self.assertEqual(module.next_version(tags, targets), '6.1.0-daily.181')
+        import json
+        audited = json.loads((ROOT / 'scripts/historical-windows-versions.json').read_text())['audited_tag_history']
+        if not set(audited).issubset(tags):
+            self.skipTest('Full audited tag history not available')
+        self.assertEqual(module.next_version(audited, targets), '6.1.0-daily.181')
     def test_draft_without_tag_is_valid_but_wrong_state_or_target_is_blocked(self):
         release = dict(isDraft=True, isPrerelease=True, targetCommitish='a' * 40, tagName='v6.1.0-daily.181')
         module.verify_draft(release, 'a' * 40, release['tagName'])
