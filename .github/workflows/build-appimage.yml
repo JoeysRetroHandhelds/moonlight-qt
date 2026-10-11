@@ -245,7 +245,7 @@ jobs:
 
       - name: Test nightly updater and DualSense haptics
         if: contains(inputs.ci_version, '-daily.')
-        timeout-minutes: 10
+        timeout-minutes: 30
         run: |
           set -euo pipefail
           mkdir -p build/nightly-tests-updates build/nightly-tests-haptics
@@ -255,6 +255,7 @@ jobs:
           (cd build/nightly-tests-feedback && qmake6 ../../tests/vrr/waylandfeedback.pro && make -j"$BUILD_JOBS" && ./tst_waylandfeedback)
           (cd build/nightly-tests-present && qmake6 ../../tests/vrr/plvkpresentation.pro && make -j"$BUILD_JOBS" && ./tst_plvkpresentation)
           (cd build/nightly-tests-gpu && qmake6 ../../tests/vrr/gpuperformancehold.pro && make -j"$BUILD_JOBS" && ./tst_gpuperformancehold)
+          bash scripts/test-linux-integration.sh qmake6
 
       - name: Verify nightly AppImage payload and embedded version
         if: contains(inputs.ci_version, '-daily.')

@@ -86,6 +86,7 @@ jobs:
               'cd build/nightly-tests-feedback && qmake ../../tests/vrr/waylandfeedback.pro && make -j2 && ./tst_waylandfeedback',
               'cd build/nightly-tests-present && qmake ../../tests/vrr/plvkpresentation.pro && make -j2 && ./tst_plvkpresentation',
               'cd build/nightly-tests-gpu && qmake ../../tests/vrr/gpuperformancehold.pro && make -j2 && ./tst_gpuperformancehold',
+              'BUILD_JOBS=2 bash scripts/test-linux-integration.sh qmake',
               'python3 scripts/verify-linux-features.py --root /app --qt-plugins "$(qmake -query QT_INSTALL_PLUGINS)"'
           ]
           module['sources'][1]['commands'] = ['echo ' + os.environ['CI_VERSION'] + ' > app/version.txt']
