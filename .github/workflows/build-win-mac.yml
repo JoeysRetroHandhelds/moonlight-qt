@@ -72,6 +72,14 @@ jobs:
           python scripts/daily-version.py --check-vrr "$env:CI_VERSION"
           if ($LASTEXITCODE -ne 0) { throw "VRR Windows version would not upgrade daily installs" }
 
+      - name: Test Windows package product version representation
+        if: runner.os == 'Windows'
+        timeout-minutes: 2
+        shell: pwsh
+        run: |
+          python -B -m unittest discover -s scripts/tests -p test_windows_product_version.py -v
+          if ($LASTEXITCODE -ne 0) { throw "Windows MSI product version regression tests failed: $LASTEXITCODE" }
+
       - name: Download dependencies (Windows)
         if: runner.os == 'Windows'
         run: powershell ./setup-deps.ps1
