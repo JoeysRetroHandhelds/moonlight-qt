@@ -57,7 +57,7 @@ popd
 echo Compiling Moonlight in $BUILD_CONFIG configuration
 pushd $BUILD_FOLDER
 make -j"$BUILD_JOBS" $(echo "$BUILD_CONFIG" | tr '[:upper:]' '[:lower:]') || fail "Make failed!"
-grep -q -- '-DHAS_WAYLAND' app/Makefile || fail "Native Wayland feedback was not compiled"
+grep -q -- '-DHAS_WAYLAND' app/Makefile.Release || fail "Native Wayland feedback was not compiled"
 popd
 
 echo Deploying to staging directory
