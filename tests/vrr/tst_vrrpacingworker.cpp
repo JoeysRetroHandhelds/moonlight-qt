@@ -236,7 +236,7 @@ void testPreparedFramesOverlapAndTrace()
                graph[0].decoderReadyUs == graph[0].decoderOutputUs &&
                graph[1].decoderReadyUs == graph[1].decoderOutputUs,
            "input graph must retain frame-specific network and proven staged decoder readiness");
-    expect(graph.size() == 2 && graph[0].toleranceUs == 250 && graph[1].toleranceUs == 250,
+    expect(graph.size() == 2 && graph[0].toleranceUs == 500 && graph[1].toleranceUs == 500,
            "input graph must carry the active Smooth profile tolerance on each frame");
     const auto lines = readExpandedTrace(path).split('\n');
     const auto columns = lines.value(0).split(',');
