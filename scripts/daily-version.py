@@ -1,12 +1,29 @@
 """Allocate the next MSI build from remote tag history; never reserve a live tag."""
+import json
 import re
 import subprocess
 from pathlib import Path
 
 
-def next_version(tags):
+# Only these audited irregular historical tags may bypass version-name parsing.
+HISTORICAL_WINDOWS_VERSIONS = {
+    release['tag']: release
+    for release in json.loads((Path(__file__).parent / 'historical-windows-versions.json').read_text())['releases']
+}
+
+
+def next_version(tags, tag_targets=None):
     maximum = 0
     for tag in tags:
+        if tag in HISTORICAL_WINDOWS_VERSIONS:
+            history = HISTORICAL_WINDOWS_VERSIONS[tag]
+            target = (tag_targets.get(tag) if tag_targets is not None else
+                      subprocess.check_output(['git', 'rev-parse', f'{tag}^{{commit}}'], text=True).strip())
+            if target != history['tag_commit']:
+                raise ValueError(f'Audited historical tag {tag} changed target or has no verified target')
+            if history['msi_product_version'] != '6.1.0.0' or history['pe_file_version'] != '6.1.0.0':
+                raise ValueError(f'Audited historical tag {tag} requires version migration')
+            continue  # Shipped 6.1.0.0 is below every 6.2.B daily build.
         match = re.fullmatch(r"v6\.1\.0-vrr(\d+)(?:\.(\d+))?", tag)
         if match:
             n, patch = match.groups()

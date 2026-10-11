@@ -29,9 +29,14 @@ reviewed source normally and revise the lane's branch guards and fetch ref.
    release publication with this lane to avoid competing version reservations.
    The reusable Windows workflow rejects a VRR build whose existing mapping is
    equal to or lower than any tagged daily version; it does not remap VRR tags.
-   Known historical tags `v6.1.0-vrr` and `v6.1.0-vrr9.1.1` have no recognized
-   mapping and currently block daily allocation. Confirm their actual shipped
-   PE/MSI versions and encode reviewed history before the first hosted dry run.
+   The two irregular historical tags `v6.1.0-vrr` and `v6.1.0-vrr9.1.1`
+   are exact exceptions: their downloaded, SHA-256-verified Windows assets both
+   have PE and MSI version `6.1.0.0`, below the `6.2.B` sequence. Each exception
+   requires the audited exact tag commit. Retargeting either tag blocks allocation.
+   [Audit evidence](../scripts/historical-windows-versions.json) records release
+   URLs, commit SHAs, all four asset hashes, extracted EXE hashes and versions.
+   `vrr9.1.1` republishes unchanged `vrr9.1` Windows assets. The inspected remote
+   tag history allocates first daily `6.1.0-daily.181` / Windows `6.2.181`.
    Newer base-version tags, unknown custom tags, or build >65535 block allocation
    and require explicit version migration. Untagged installed custom versions
    must be accounted for before activation.

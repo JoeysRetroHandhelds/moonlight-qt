@@ -15,9 +15,26 @@ class DailyVersionTests(unittest.TestCase):
         self.assertEqual(module.next_version(['v6.1.0-daily.999']), '6.1.0-daily.1000')
     def test_boundary_and_migration_fail_closed(self):
         self.assertEqual(module.next_version(['v6.1.0-daily.65534']), '6.1.0-daily.65535')
-        for tags in (['v6.1.0-daily.65535'], ['v6.3.0'], ['v6.1.0-vrr18-bad'], ['v6.1.0-daily.bad'], ['v6.1.0-rc1'], ['v6.1.0-vrr'], ['v6.1.0-vrr9.1.1']):
+        for tags in (['v6.1.0-daily.65535'], ['v6.3.0'], ['v6.1.0-vrr18-bad'], ['v6.1.0-daily.bad'], ['v6.1.0-rc1']):
             with self.subTest(tags=tags), self.assertRaises(ValueError):
                 module.next_version(tags)
+    def test_audited_legacy_tags_require_exact_commits(self):
+        tags = list(module.HISTORICAL_WINDOWS_VERSIONS) + ['v6.1.0-vrr18']
+        targets = {tag: entry['tag_commit'] for tag, entry in module.HISTORICAL_WINDOWS_VERSIONS.items()}
+        self.assertEqual(module.next_version(tags, targets), '6.1.0-daily.181')
+        for tag in module.HISTORICAL_WINDOWS_VERSIONS:
+            with self.subTest(tag=tag), self.assertRaises(ValueError):
+                module.next_version(tags, dict(targets, **{tag: 'f' * 40}))
+            with self.subTest(missing=tag), self.assertRaises(ValueError):
+                module.next_version([tag], {})
+        with self.assertRaises(ValueError):
+            module.next_version(['v6.1.0-vrr9.1.2'], targets)
+    def test_actual_repository_history_first_daily(self):
+        tags = subprocess.check_output(['git', '-C', str(ROOT), 'tag', '--list'], text=True).splitlines()
+        if not all(tag in tags for tag in module.HISTORICAL_WINDOWS_VERSIONS):
+            self.skipTest('Audited repository historical tags not available')
+        targets = {tag: subprocess.check_output(['git', '-C', str(ROOT), 'rev-parse', f'{tag}^{{commit}}'], text=True).strip() for tag in module.HISTORICAL_WINDOWS_VERSIONS}
+        self.assertEqual(module.next_version(tags, targets), '6.1.0-daily.181')
     def test_draft_without_tag_is_valid_but_wrong_state_or_target_is_blocked(self):
         release = dict(isDraft=True, isPrerelease=True, targetCommitish='a' * 40, tagName='v6.1.0-daily.181')
         module.verify_draft(release, 'a' * 40, release['tagName'])
