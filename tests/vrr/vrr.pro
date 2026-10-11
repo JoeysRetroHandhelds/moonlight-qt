@@ -86,6 +86,8 @@ SUBDIRS += profile
 linux:packagesExist(wayland-client wayland-server) {
     gamescoperepaint.file = $$PWD/gamescoperepaint.pro
     SUBDIRS += gamescoperepaint
+    kwinscanoutguard.file = $$PWD/kwinscanoutguard.pro
+    SUBDIRS += kwinscanoutguard
 }
 
 phasetrajectory.file = $$PWD/phasetrajectory.pro

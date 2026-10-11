@@ -542,6 +542,27 @@ wayland {
     HEADERS += streaming/video/ffmpeg-renderers/waylandfeedback/wayland.h
     HEADERS += streaming/video/ffmpeg-renderers/pacer/waylandvsyncsource.h
 }
+# Keeps KWin able to scan a fullscreen stream out directly. It loads
+# libwayland-client at runtime and reads KMS state with ioctls, so it is also
+# built where Wayland and libdrm linking are disabled (the AppImage).
+linux:!disable-kwin-scanout-guard:packagesExist(wayland-client) {
+    message(KWin scanout guard enabled)
+
+    DEFINES += HAVE_KWIN_SCANOUT_GUARD
+    SOURCES += streaming/kwinscanoutguard.cpp \
+               streaming/video/ffmpeg-renderers/protocols/kde-output-device-v2-protocol.c \
+               streaming/video/ffmpeg-renderers/protocols/kde-output-management-v2-protocol.c
+    HEADERS += streaming/kwinscanoutguard.h \
+               streaming/video/ffmpeg-renderers/protocols/kde-output-device-v2-client-protocol.h \
+               streaming/video/ffmpeg-renderers/protocols/kde-output-management-v2-client-protocol.h
+    QMAKE_CFLAGS += $$system(pkg-config --cflags wayland-client)
+    QMAKE_CXXFLAGS += $$system(pkg-config --cflags wayland-client)
+    LIBS += -ldl
+    qtHaveModule(dbus) {
+        QT += dbus
+        DEFINES += HAVE_QTDBUS
+    }
+}
 !disable-h264bitstream {
     DEFINES += HAVE_H264BITSTREAM
 }

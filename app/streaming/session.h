@@ -12,6 +12,9 @@
 #include "video/overlaymanager.h"
 #include "video/clientpacingwarning.h"
 #include "diagnostics/diagnosticcapture.h"
+#ifdef HAVE_KWIN_SCANOUT_GUARD
+#include "streaming/kwinscanoutguard.h"
+#endif
 
 class SupportedVideoFormatList : public QList<int>
 {
@@ -286,6 +289,9 @@ private:
     ClientPacingWarning m_ClientPacingWarning;
     PresentationSettings m_PresentationSettings;
     std::unique_ptr<DiagnosticCapture> m_DiagnosticCapture;
+#ifdef HAVE_KWIN_SCANOUT_GUARD
+    std::unique_ptr<KWinScanoutGuard> m_ScanoutGuard;
+#endif
     bool m_IsFullScreen;
     bool m_HevcPacingAlternative = false;
     SupportedVideoFormatList m_SupportedVideoFormats; // Sorted in order of descending priority

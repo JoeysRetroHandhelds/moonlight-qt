@@ -4249,6 +4249,41 @@ Display-side low-frame-rate compensation remains the display's responsibility.
 Historical `gap_fills_before` and `gap_fill_last_us` CSV columns remain reserved
 and zero-valued to preserve trace compatibility.
 
+#### KWin scanout guard (2026-10-11)
+
+On Plasma Wayland, a fullscreen stream's handoff-to-screen latency
+(`latch_time_us - presenter_submission_time_us`) has a floor of about 1.4 ms
+with direct scanout and about 6 ms when KWin composites. KWin 6.4.3 never sets
+the presentation ZERO_COPY flag, so that floor is the evidence. A TV hotplug
+left two KWin states that composite every frame until something resets them:
+
+- A short animation effect (`fadingpopups`) stayed active forever. Its
+  timeline only advances when its window is painted, and any active effect that
+  does not opt out blocks direct scanout on every output.
+- The atomic test that moves the HDR gamma 2.2 to PQ conversion into the CRTC
+  `GAMMA_LUT` failed, so KWin fell back to a shadow buffer: an extra 4K GPU pass
+  per frame that delayed PyroWave 4K 4:4:4 decode (decode wait p50 3.7 ms
+  -> 8 ms, about 20% client pacing drops).
+
+`streaming/kwinscanoutguard.cpp` runs on its own thread while a stream is
+active. Every 2 s while fullscreen it reads KWin's `activeEffects` over D-Bus
+and reloads a short animation effect active for 6 s, at most three times per
+effect. Every 10 s it reads KMS state with plain ioctls: an active connector
+with HDR metadata whose CRTC has no `GAMMA_LUT` is the shadow-buffer fallback.
+The guard then re-applies that output's current SDR brightness through
+`kde_output_management_v2`. Any applied configuration makes KWin rerun
+`tryKmsColorOffloading()`, with no visible change. Outputs set to prefer color
+accuracy use the shadow buffer on purpose and are left alone; retries stop
+after three. Every action is logged with the prefix `KWin scanout guard:`.
+
+The guard links neither libwayland-client nor libdrm (the AppImage disables
+both). It loads libwayland-client at runtime, and every compositor wait has a
+2 s deadline so the end of a stream never blocks on it. The Flatpak needs
+`--talk-name=org.kde.KWin` for the effect check. The KMS check and the HDR
+retry use only the Wayland socket and `/dev/dri`. `MOONLIGHT_KWIN_SCANOUT_GUARD=0`
+disables the guard, and `tests/vrr/tst_kwinscanoutguard` exercises it against a
+fake KWin.
+
 ## 12. Audio, input, and end-to-end latency
 
 Audio has its own UDP/RTP queue, Opus decoding callback, and renderer/device
