@@ -4138,9 +4138,19 @@ void testReceiveDeadlineMath()
     D::clearPresentWindow();
 }
 
+template<class Test>
+void runNamed(const char* name, Test test)
+{
+    std::fprintf(stderr, "RUN: %s\n", name);
+    std::fflush(stderr);
+    test();
+    std::fprintf(stderr, "DONE: %s\n", name);
+    std::fflush(stderr);
+}
+
 int main()
 {
-    testReceiveDeadlineMath();
+    runNamed("testReceiveDeadlineMath()", [&] { testReceiveDeadlineMath(); });
     Vrr13::ReadinessWindow averageWindow;
     averageWindow.record(1000000, 500, false);
     averageWindow.record(1001000, 1500, false);
@@ -4153,8 +4163,8 @@ int main()
         "the mean-miss score must fall only when the average exceeds one millisecond");
     expect(Vrr13::ReadinessWindow::meanMissScore(averageWindow.snapshot(32000000)) == 100.0,
         "expired misses must not depress the current mean-miss score");
-    testTraceQueueConcurrency();
-    testReadinessWindow();
+    runNamed("testTraceQueueConcurrency()", [&] { testTraceQueueConcurrency(); });
+    runNamed("testReadinessWindow()", [&] { testReadinessWindow(); });
     SDL_SetMainReady();
     if (SDL_Init(SDL_INIT_TIMER) != 0) {
         std::fprintf(stderr, "FAIL: SDL_Init: %s\n", SDL_GetError());
@@ -4164,58 +4174,58 @@ int main()
     if(qEnvironmentVariable("MOONLIGHT_VRR_TEST_TRAJECTORY_RESERVATION_ONLY")=="1") {
         testTrajectoryReadySuccessorReservation();SDL_Quit();return failures?1:0;
     }
-    testPreparedFramesOverlapAndTrace();
-    testSlowPreparedFramesKeepPresenting();
-    testPreparedFrameCancellationAndBound();
-    testPreparedFrameSuspendAndFallback();
-    testCapabilityRejection();
-    testPresentationRequestSelectedBeforePreparation();
-    testEmptyQueueDoesNotRepeatFrames();
+    runNamed("testPreparedFramesOverlapAndTrace()", [&] { testPreparedFramesOverlapAndTrace(); });
+    runNamed("testSlowPreparedFramesKeepPresenting()", [&] { testSlowPreparedFramesKeepPresenting(); });
+    runNamed("testPreparedFrameCancellationAndBound()", [&] { testPreparedFrameCancellationAndBound(); });
+    runNamed("testPreparedFrameSuspendAndFallback()", [&] { testPreparedFrameSuspendAndFallback(); });
+    runNamed("testCapabilityRejection()", [&] { testCapabilityRejection(); });
+    runNamed("testPresentationRequestSelectedBeforePreparation()", [&] { testPresentationRequestSelectedBeforePreparation(); });
+    runNamed("testEmptyQueueDoesNotRepeatFrames()", [&] { testEmptyQueueDoesNotRepeatFrames(); });
     // Every profile waits in the same queue
-    testQueueCapacityAndDrops(1, VrrLargestQueuedFrames);
-    testQueueCapacityAndDrops(2, VrrLargestQueuedFrames);
-    testQueueCapacityAndDrops(0, VrrLargestQueuedFrames);
-    testAdmissionWaitInterruption();
-    testLatePreparedFramePresentsImmediately();
-    testQueuedStaleFrameYieldsToFreshSuccessor();
-    testExpiredQueueSkipsBlockingDecode();
-    testSinglePeriodQueueDelayPreservesFluidity();
-    testLatencyFixDropBoundaries();
-    testLatencyFixQueuedRecovery();
-    testLatencyPresetsQueuedRecovery();
-    testDecodeWaitDoesNotExpireReadyFrame();
-    testRepeatedDecodeContentionKeepsPresenting();
-    testFirstFrameDecodeReadinessTrace();
-    testShortAndAlreadyCompleteDecodeReadiness();
-    testNativeScheduledEnqueueCadenceAndLifecycle();
-    testTelemetrySnapshotsRemainCumulative();
-    testSuspendDiscardAndFreshFrame();
-    testCancelledPreparedFenceTrace();
-    testDeferredSurfaceLifetime();
-    testReusableSurfaceReleasedWithoutSuccessor();
-    testDecodeBoundaryCapturedBeforeQueueAndPreparedExactly();
-    testCancelledPresentationCountsAsDroppedOutput();
-    testPresentCallSpacingSetsDisplayFloor();
-    testBlockingPresentUsesWorkerCallBoundary();
-    testSubmissionErrorCapturesPresentOverhead();
-    testFailedPreparationCancellationHonorsDisplayFloor();
-    testSuspendedPreparedCancellationHonorsDisplayFloor();
-    testImmutablePresentationContract();
-    testTraceCapturesEveryDeliveredFrame();
-    testSmoothnessTraceCapturesReadinessPolicy();
-    testFailedCancellationNativeEvidenceIsTraced();
-    testMetalPresentationFeedback();
-    testD3D11ReadinessBeforeTarget();
-    testSynchronizedCompositionFeedback();
-    testDxgiConfirmedRefreshFeedback();
-    testDxgiGuardWithoutAlignmentTrace();
-    testMetalFailedPreparationFeedback();
-    testReconnectPreservesCompletedTraces();
-    testDeepTraceRequestsNativeObservationsWithoutChangingMode();
+    runNamed("testQueueCapacityAndDrops(1, VrrLargestQueuedFrames)", [&] { testQueueCapacityAndDrops(1, VrrLargestQueuedFrames); });
+    runNamed("testQueueCapacityAndDrops(2, VrrLargestQueuedFrames)", [&] { testQueueCapacityAndDrops(2, VrrLargestQueuedFrames); });
+    runNamed("testQueueCapacityAndDrops(0, VrrLargestQueuedFrames)", [&] { testQueueCapacityAndDrops(0, VrrLargestQueuedFrames); });
+    runNamed("testAdmissionWaitInterruption()", [&] { testAdmissionWaitInterruption(); });
+    runNamed("testLatePreparedFramePresentsImmediately()", [&] { testLatePreparedFramePresentsImmediately(); });
+    runNamed("testQueuedStaleFrameYieldsToFreshSuccessor()", [&] { testQueuedStaleFrameYieldsToFreshSuccessor(); });
+    runNamed("testExpiredQueueSkipsBlockingDecode()", [&] { testExpiredQueueSkipsBlockingDecode(); });
+    runNamed("testSinglePeriodQueueDelayPreservesFluidity()", [&] { testSinglePeriodQueueDelayPreservesFluidity(); });
+    runNamed("testLatencyFixDropBoundaries()", [&] { testLatencyFixDropBoundaries(); });
+    runNamed("testLatencyFixQueuedRecovery()", [&] { testLatencyFixQueuedRecovery(); });
+    runNamed("testLatencyPresetsQueuedRecovery()", [&] { testLatencyPresetsQueuedRecovery(); });
+    runNamed("testDecodeWaitDoesNotExpireReadyFrame()", [&] { testDecodeWaitDoesNotExpireReadyFrame(); });
+    runNamed("testRepeatedDecodeContentionKeepsPresenting()", [&] { testRepeatedDecodeContentionKeepsPresenting(); });
+    runNamed("testFirstFrameDecodeReadinessTrace()", [&] { testFirstFrameDecodeReadinessTrace(); });
+    runNamed("testShortAndAlreadyCompleteDecodeReadiness()", [&] { testShortAndAlreadyCompleteDecodeReadiness(); });
+    runNamed("testNativeScheduledEnqueueCadenceAndLifecycle()", [&] { testNativeScheduledEnqueueCadenceAndLifecycle(); });
+    runNamed("testTelemetrySnapshotsRemainCumulative()", [&] { testTelemetrySnapshotsRemainCumulative(); });
+    runNamed("testSuspendDiscardAndFreshFrame()", [&] { testSuspendDiscardAndFreshFrame(); });
+    runNamed("testCancelledPreparedFenceTrace()", [&] { testCancelledPreparedFenceTrace(); });
+    runNamed("testDeferredSurfaceLifetime()", [&] { testDeferredSurfaceLifetime(); });
+    runNamed("testReusableSurfaceReleasedWithoutSuccessor()", [&] { testReusableSurfaceReleasedWithoutSuccessor(); });
+    runNamed("testDecodeBoundaryCapturedBeforeQueueAndPreparedExactly()", [&] { testDecodeBoundaryCapturedBeforeQueueAndPreparedExactly(); });
+    runNamed("testCancelledPresentationCountsAsDroppedOutput()", [&] { testCancelledPresentationCountsAsDroppedOutput(); });
+    runNamed("testPresentCallSpacingSetsDisplayFloor()", [&] { testPresentCallSpacingSetsDisplayFloor(); });
+    runNamed("testBlockingPresentUsesWorkerCallBoundary()", [&] { testBlockingPresentUsesWorkerCallBoundary(); });
+    runNamed("testSubmissionErrorCapturesPresentOverhead()", [&] { testSubmissionErrorCapturesPresentOverhead(); });
+    runNamed("testFailedPreparationCancellationHonorsDisplayFloor()", [&] { testFailedPreparationCancellationHonorsDisplayFloor(); });
+    runNamed("testSuspendedPreparedCancellationHonorsDisplayFloor()", [&] { testSuspendedPreparedCancellationHonorsDisplayFloor(); });
+    runNamed("testImmutablePresentationContract()", [&] { testImmutablePresentationContract(); });
+    runNamed("testTraceCapturesEveryDeliveredFrame()", [&] { testTraceCapturesEveryDeliveredFrame(); });
+    runNamed("testSmoothnessTraceCapturesReadinessPolicy()", [&] { testSmoothnessTraceCapturesReadinessPolicy(); });
+    runNamed("testFailedCancellationNativeEvidenceIsTraced()", [&] { testFailedCancellationNativeEvidenceIsTraced(); });
+    runNamed("testMetalPresentationFeedback()", [&] { testMetalPresentationFeedback(); });
+    runNamed("testD3D11ReadinessBeforeTarget()", [&] { testD3D11ReadinessBeforeTarget(); });
+    runNamed("testSynchronizedCompositionFeedback()", [&] { testSynchronizedCompositionFeedback(); });
+    runNamed("testDxgiConfirmedRefreshFeedback()", [&] { testDxgiConfirmedRefreshFeedback(); });
+    runNamed("testDxgiGuardWithoutAlignmentTrace()", [&] { testDxgiGuardWithoutAlignmentTrace(); });
+    runNamed("testMetalFailedPreparationFeedback()", [&] { testMetalFailedPreparationFeedback(); });
+    runNamed("testReconnectPreservesCompletedTraces()", [&] { testReconnectPreservesCompletedTraces(); });
+    runNamed("testDeepTraceRequestsNativeObservationsWithoutChangingMode()", [&] { testDeepTraceRequestsNativeObservationsWithoutChangingMode(); });
     if(qEnvironmentVariable("MOONLIGHT_VRR_TEST_SKIP_RESERVATION")!="1")
         testTrajectoryReadySuccessorReservation();
-    testExperimentalInputPercentileActivationTrace();
-    testTraceCapturesAllowTearingWithoutChangingController();
+    runNamed("testExperimentalInputPercentileActivationTrace()", [&] { testExperimentalInputPercentileActivationTrace(); });
+    runNamed("testTraceCapturesAllowTearingWithoutChangingController()", [&] { testTraceCapturesAllowTearingWithoutChangingController(); });
 
     exportWarmHistoryReplayFixture();
     SDL_Quit();
