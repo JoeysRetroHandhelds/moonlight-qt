@@ -154,6 +154,39 @@ private slots:
         nightly["assets"] = assets;
         QVERIFY(AutoUpdateChecker::findUpdate({nightly}, installed, "appimage", "x86_64").isEmpty());
     }
+    void nightlyAppFamilyMigration()
+    {
+        QCOMPARE(version("6.2.0-daily.183"), QVector<int>({6, 2, 183, 0, 0}));
+        QCOMPARE(version("6.2.0-daily.183", false), QVector<int>({6, 2, 0, 183, 0}));
+        QCOMPARE(version("6.1.0-daily.183"), version("6.2.0-daily.183"));
+        QVERIFY(AutoUpdateChecker::compareVersion(version("6.2.0-daily.183"), version("6.1.0-daily.182")) > 0);
+        QVERIFY(AutoUpdateChecker::compareVersion(version("6.2.0-daily.183", false), version("6.1.0-daily.182", false)) > 0);
+        QVERIFY(AutoUpdateChecker::compareVersion(version("6.2.0"), version("6.1.0-daily.182")) < 0);
+
+        auto nightly = release("v6.2.0-daily.183", "MoonlightPortable-x64-6.2.0-daily.183.zip", true);
+        auto assets = nightly["assets"].toArray();
+        for (const QString name : {"MoonlightSetup-6.2.0-daily.183.exe", "Moonlight-6.2.0-daily.183.dmg",
+                                   "Moonlight-6.2.0-daily.183-x86_64.AppImage", "nightly-metadata.json", "SHA256SUMS"})
+            assets.append(QJsonObject{{"name", name}, {"state", "uploaded"}, {"size", 100}});
+        nightly["assets"] = assets;
+        QCOMPARE(AutoUpdateChecker::findUpdate({nightly}, version("6.1.0-daily.182"), "windows", "x86_64")
+                     .value("tag_name").toString(), QString("v6.2.0-daily.183"));
+        QVERIFY(!AutoUpdateChecker::findUpdate({nightly}, version("6.1.0-daily.182"), "windows", "arm64").isEmpty());
+        for (const QString platform : {"osx", "appimage"}) {
+            QVERIFY(!AutoUpdateChecker::findUpdate({nightly}, version("6.1.0-daily.182", false), platform, "x86_64").isEmpty());
+            QVERIFY(AutoUpdateChecker::findUpdate({nightly}, version("6.2.0-daily.183", false), platform, "x86_64").isEmpty());
+            QVERIFY(AutoUpdateChecker::findUpdate({nightly}, version("6.2.0-daily.184", false), platform, "x86_64").isEmpty());
+        }
+        QJsonObject metadata{{"schema_version", 1}, {"channel", "nightly"}, {"tag", "v6.2.0-daily.183"},
+                             {"version", "6.2.0-daily.183"}, {"nightly_sequence", 183},
+                             {"windows_product_version", "6.2.183"}, {"source_commit", QString(40, 'a')}};
+        QVERIFY(AutoUpdateChecker::validNightlyMetadata(nightly, metadata));
+        metadata["windows_product_version"] = "6.2.182";
+        QVERIFY(!AutoUpdateChecker::validNightlyMetadata(nightly, metadata));
+        for (const QString invalid : {"6.2.0-daily.0", "6.2.0-daily.65536", "6.2.0-daily.183.1",
+                                      "6.2.1-daily.183", "6.3.0-daily.183", "6.2.0-vrr19"})
+            QVERIFY(version(invalid).isEmpty());
+    }
     void versionOrdering()
     {
         const QStringList ordered{"6.1.0", "v6.1.0-vrr9", "6.1.0-vrr10", "6.1.0-vrr17",

@@ -171,16 +171,22 @@ bool AutoUpdateChecker::parseVersion(const QString& string, QVector<int>& versio
     }
     if (match.captured(4) == "daily." && !match.captured(6).isEmpty()) { version.clear(); return false; }
     if (match.captured(4) == "vrr" || match.captured(4) == "daily.") {
-        // These fork builds use MSI/PE 6.2.B while displaying 6.1.0-<channel>.
+        // Both nightly app families share the monotonically increasing MSI/PE
+        // 6.2.B sequence. Non-Windows ordering retains the displayed app base.
         // A stock 6.2.0 is older than an already installed 6.2.B fork build.
-        if (version[0] != 6 || version[1] != 1 || version[2] != 0) { version.clear(); return false; }
+        const bool daily = match.captured(4) == "daily.";
+        if (version[0] != 6 || version[2] != 0 ||
+                (daily ? (version[1] != 1 && version[1] != 2) : version[1] != 1)) {
+            version.clear(); return false;
+        }
         int build = version[3];
+        if (daily && (build < 1 || build > 65535)) { version.clear(); return false; }
         if (match.captured(4) == "vrr" && (build >= 18 || !match.captured(6).isEmpty())) {
             if (build > (std::numeric_limits<int>::max() - version[4]) / 10) { version.clear(); return false; }
             build = build * 10 + version[4];
         }
         if (windowsProduct) version = {6, 2, build, 0, 0};
-        else version = {6, 1, 0, build, 0};
+        else version = {6, version[1], 0, build, 0};
     }
     return true;
 }

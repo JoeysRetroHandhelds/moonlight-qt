@@ -69,7 +69,7 @@ echo Extra deployment arguments: $EXTRA_ARGS
 macdeployqt $BUILD_FOLDER/app/Moonlight.app $EXTRA_ARGS -qmldir=$SOURCE_ROOT/app/gui -appstore-compliant || fail "macdeployqt failed!"
 
 # Apple bundle versions remain numeric; nightly identity and source are explicit.
-if [[ "$VERSION" =~ ^6\.1\.0-daily\.([1-9][0-9]*)$ ]]; then
+if [[ "$VERSION" =~ ^6\.[12]\.0-daily\.([1-9][0-9]*)$ ]]; then
   NIGHTLY_SEQUENCE="${BASH_REMATCH[1]}"
   NIGHTLY_SOURCE=$(git rev-parse HEAD) || fail "Could not resolve nightly source"
   PLIST="$BUILD_FOLDER/app/Moonlight.app/Contents/Info.plist"

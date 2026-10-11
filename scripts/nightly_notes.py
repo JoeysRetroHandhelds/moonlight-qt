@@ -23,10 +23,13 @@ def sequence(repo, tag, version=None, source=None):
     if repo not in REPOSITORIES:
         raise ValueError('Repository is not in the nightly allowlist')
     if repo == 'Nonary/moonlight-qt':
-        match = re.fullmatch(r'v6\.1\.0-daily\.([1-9][0-9]*)', tag)
+        match = re.fullmatch(r'v6\.[12]\.0-daily\.([1-9][0-9]*)', tag)
         if not match or (version is not None and tag != 'v' + version):
             raise ValueError('Invalid Moonlight nightly identity')
-        return int(match[1])
+        build = int(match[1])
+        if build > 65535:
+            raise ValueError('Moonlight nightly sequence exceeds the Windows build field')
+        return build
     match = re.fullmatch(r'daily-(20[0-9]{2})-([0-9]{2})-([0-9]{2})', tag)
     if not match:
         raise ValueError('Invalid host nightly tag')

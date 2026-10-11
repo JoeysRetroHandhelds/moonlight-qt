@@ -94,6 +94,29 @@ class NightlyNotesTests(unittest.TestCase):
         del data['windows_product_version']
         self.assertEqual(n.previous_release('Nonary/moonlight-qt', [r], lambda a: data, lambda tag: A)['source_commit'], A)
 
+    def test_moonlight_app_family_migration_preserves_previous_baseline(self):
+        repo = 'Nonary/moonlight-qt'
+        old = dict(release('v6.1.0-daily.182'), assets=[{'name': 'nightly-metadata.json'}])
+        data = dict(schema_version=1, channel='nightly', tag=old['tag_name'], source_commit=A,
+                    nightly_sequence=182, version='6.1.0-daily.182', windows_product_version='6.2.182')
+        previous = n.previous_release(repo, [old], lambda a: data, lambda tag: A)
+        notes, migrated = n.make_notes(repo, 'v6.2.0-daily.183', '6.2.0-daily.183', B,
+                                      previous, [(B, 'chore(version): align app base to 6.2.0')])
+        self.assertEqual(migrated['nightly_sequence'], 183)
+        self.assertEqual(migrated['windows_product_version'], '6.2.183')
+        self.assertEqual(migrated['previous_successful_tag'], old['tag_name'])
+        self.assertEqual(migrated['previous_source_commit'], A)
+        self.assertIn('chore(version): align app base to 6.2.0', notes)
+        new = dict(release('v6.2.0-daily.183'), published_at='2026-10-11T12:00:00Z',
+                   assets=[{'name': 'nightly-metadata.json'}])
+        found = n.previous_release(repo, [old, new], lambda a: migrated, lambda tag: B)
+        self.assertEqual(found, {'tag': new['tag_name'], 'source_commit': B})
+        for tag in ('v6.2.0-daily.0', 'v6.2.0-daily.65536', 'v6.3.0-daily.183'):
+            with self.subTest(tag=tag), self.assertRaises(ValueError):
+                n.sequence(repo, tag)
+        with self.assertRaises(ValueError):
+            n.sequence(repo, 'v6.2.0-daily.183', '6.1.0-daily.183')
+
     def test_exact_delta_argv_preserves_multiline_messages(self):
         import tempfile
         import json
