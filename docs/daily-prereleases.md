@@ -66,5 +66,7 @@ Local safeguard test:
 python -m unittest discover -s scripts/tests -p test_daily_release.py -v
 ```
 
-No workflow was activated, pushed, or released during implementation. Full hosted
+Daily publication remains disabled. The isolated validation candidate may be
+pushed to `codex/daily-prerelease-safety` for artifact-only hosted builds; this
+does not integrate it into master or publish a release. Full combined application
 build/packaging validation and source approval remain activation requirements.
