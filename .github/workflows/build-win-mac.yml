@@ -9,6 +9,11 @@ on:
       ci_version:
         required: true
         type: string
+      source_ref:
+        description: Immutable source commit (daily lane); empty preserves normal checkout
+        required: false
+        type: string
+        default: ""
       build_macos:
         required: false
         type: boolean
@@ -19,6 +24,11 @@ on:
         description: Version string used for the release artifacts
         required: true
         type: string
+      source_ref:
+        description: Immutable source commit (daily lane); empty preserves normal checkout
+        required: false
+        type: string
+        default: ""
       build_macos:
         description: Include the macOS build
         required: false
@@ -41,6 +51,7 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v5
         with:
+          ref: ${{ inputs.source_ref }}
           submodules: 'recursive'
           fetch-depth: 1
 
@@ -80,7 +91,7 @@ jobs:
           set "PATH=%QT_PATH%;%PATH%"
           scripts\build-arch.bat Release x64
         env:
-          QT_PATH: ${{ runner.workspace }}\Qt\${{ matrix.qt_version }}\msvc2022_64\bin
+          QT_PATH: ${{ github.workspace }}\..\Qt\${{ matrix.qt_version }}\msvc2022_64\bin
 
       - name: Build VRR diagnostics (Windows x64)
         if: runner.os == 'Windows'
@@ -96,14 +107,14 @@ jobs:
           nmake
           if errorlevel 1 exit /b 1
         env:
-          QT_PATH: ${{ runner.workspace }}\Qt\${{ matrix.qt_version }}\msvc2022_64\bin
+          QT_PATH: ${{ github.workspace }}\..\Qt\${{ matrix.qt_version }}\msvc2022_64\bin
 
       - name: Test VRR diagnostics (Windows x64)
         timeout-minutes: 5
         if: runner.os == 'Windows'
         shell: pwsh
         env:
-          QT_PATH: ${{ runner.workspace }}\Qt\${{ matrix.qt_version }}\msvc2022_64\bin
+          QT_PATH: ${{ github.workspace }}\..\Qt\${{ matrix.qt_version }}\msvc2022_64\bin
           MOONLIGHT_VRR_TEST_EXPORT_TRACE: ${{ github.workspace }}/build/replay-fixture.vrrtrace
           MOONLIGHT_VRR_TEST_EXPORT_WARM_TRACE: ${{ github.workspace }}/build/replay-warm-fixture.vrrtrace
           MOONLIGHT_DIAGNOSTICS_TEST_EXPORT: ${{ github.workspace }}/build/diagnostic-fixture.zip
@@ -188,7 +199,7 @@ jobs:
           set "PATH=%QT_PATH%;%PATH%"
           scripts\build-arch.bat Release arm64
         env:
-          QT_PATH: ${{ runner.workspace }}\Qt\${{ matrix.qt_version }}\msvc2022_arm64\bin
+          QT_PATH: ${{ github.workspace }}\..\Qt\${{ matrix.qt_version }}\msvc2022_arm64\bin
 
       - name: Build Package
         shell: pwsh
@@ -206,7 +217,7 @@ jobs:
           $ci = $Env:CI_VERSION
           $bundle = "build/installer-release/MoonlightSetup-$ci.exe"
           if (!(Test-Path $bundle)) { throw "Missing installer bundle $bundle" }
-          if ($ci -match '-vrr\d+') {
+          if ($ci -match '-(vrr\d+(\.\d+)?|daily\.\d+)$') {
             $expected = & ./scripts/vrr-pe-version.ps1 -CiVersion $ci
             if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($expected)) {
               throw "Could not map CI_VERSION '$ci' to a Windows PE/MSI version"
@@ -217,6 +228,10 @@ jobs:
               throw "Moonlight.exe FileVersion is '$($info.FileVersion)', expected $expected"
             }
             Write-Host "Windows PE/MSI version $($info.FileVersion)"
+          }
+          if ($ci -match '-daily\.\d+$') {
+            & ./scripts/check-daily-packages.ps1 -CiVersion $ci
+            if ($LASTEXITCODE -ne 0) { throw "Daily package validation failed" }
           }
           Copy-Item $bundle "build/installer-x64-release/MoonlightSetup-$ci.exe"
 

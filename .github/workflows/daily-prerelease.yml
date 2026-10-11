@@ -1,0 +1,115 @@
+name: Daily Windows prerelease
+on:
+  schedule:
+    - cron: '47 6 * * *'
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Publish after all gates (requires DAILY_RELEASE_ENABLED)
+        type: boolean
+        required: false
+        default: false
+permissions:
+  contents: read
+concurrency:
+  group: daily-windows-prerelease
+  cancel-in-progress: false
+jobs:
+  prepare:
+    if: github.repository == 'Nonary/moonlight-qt' && github.ref == 'refs/heads/master' && vars.DAILY_RELEASE_SOURCE_BRANCH == 'master' && (github.event_name == 'workflow_dispatch' || vars.DAILY_RELEASE_ENABLED == 'true')
+    runs-on: ubuntu-latest
+    outputs:
+      source_sha: ${{ steps.source.outputs.source_sha }}
+      ci_version: ${{ steps.version.outputs.ci_version }}
+      tag: ${{ steps.version.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - name: Snapshot explicitly confirmed remote source
+        id: source
+        run: |
+          set -euo pipefail
+          git fetch origin refs/heads/master:refs/remotes/origin/master --tags
+          sha=$(git rev-parse refs/remotes/origin/master)
+          echo "source_sha=$sha" >> "$GITHUB_OUTPUT"
+      - name: Allocate monotonic Windows version
+        id: version
+        run: python3 scripts/daily-version.py
+      - name: Test release safeguards
+        run: python3 -m unittest discover -s scripts/tests -p test_daily_release.py -v
+  windows:
+    needs: prepare
+    uses: ./.github/workflows/build-win-mac.yml
+    with:
+      ci_version: ${{ needs.prepare.outputs.ci_version }}
+      source_ref: ${{ needs.prepare.outputs.source_sha }}
+      build_macos: false
+  publish:
+    needs: [prepare, windows]
+    if: needs.prepare.result == 'success' && needs.windows.result == 'success' && vars.DAILY_RELEASE_ENABLED == 'true' && vars.DAILY_RELEASE_SOURCE_BRANCH == 'master' && (github.event_name == 'schedule' || inputs.publish)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: Nonary/moonlight-qt
+      DAILY_TAG: ${{ needs.prepare.outputs.tag }}
+      CI_VERSION: ${{ needs.prepare.outputs.ci_version }}
+      SOURCE_SHA: ${{ needs.prepare.outputs.source_sha }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: actions/download-artifact@v6
+        with:
+          name: Moonlight-Windows-Release-${{ needs.prepare.outputs.ci_version }}
+          path: release-assets
+      - name: Recheck remote history and verify exact assets
+        run: |
+          set -euo pipefail
+          git fetch origin --tags
+          python3 - <<'PY'
+          import importlib.util, os
+          from pathlib import Path
+          spec = importlib.util.spec_from_file_location('daily_version', 'scripts/daily-version.py')
+          module = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(module)
+          import subprocess
+          current = module.next_version(subprocess.check_output(['git', 'tag', '--list'], text=True).splitlines())
+          assert current == os.environ['CI_VERSION'], 'Tag history changed while building; rerun from scratch'
+          assets = Path('release-assets')
+          expected = {f'MoonlightSetup-{current}.exe', f'MoonlightPortable-x64-{current}.zip'}
+          assert {p.name for p in assets.iterdir()} == expected, 'Unexpected or missing assets'
+          assert all(p.is_file() and p.stat().st_size > 0 for p in assets.iterdir())
+          PY
+          if gh release view "$DAILY_TAG" >/dev/null 2>&1; then
+            echo 'Release already exists; refusing to replace it' >&2
+            exit 1
+          fi
+          (cd release-assets && sha256sum Moonlight* > SHA256SUMS)
+          printf 'Unsigned daily Windows prerelease. Source: `%s`.\n\nRequired Windows build, test, replay, version, and packaging gates passed.\n\n' "$SOURCE_SHA" > release-notes.md
+          cat release-assets/SHA256SUMS >> release-notes.md
+      - name: Create draft prerelease and upload unsigned packages
+        run: |
+          set -euo pipefail
+          gh release create "$DAILY_TAG" --target "$SOURCE_SHA" --draft --prerelease --latest=false \
+            --title "Moonlight daily $CI_VERSION" --notes-file release-notes.md
+          gh release upload "$DAILY_TAG" release-assets/*
+      - name: Publish prerelease after upload verification
+        run: |
+          set -euo pipefail
+          mkdir verified-assets
+          gh release download "$DAILY_TAG" --dir verified-assets
+          (cd verified-assets && sha256sum --check SHA256SUMS)
+          git fetch origin --tags
+          test "$(git rev-list -n 1 "$DAILY_TAG")" = "$SOURCE_SHA"
+          python3 - <<'PY'
+          import importlib.util, os, subprocess
+          spec = importlib.util.spec_from_file_location('daily_version', 'scripts/daily-version.py')
+          module = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(module)
+          tags = subprocess.check_output(['git', 'tag', '--list'], text=True).splitlines()
+          assert module.next_version([t for t in tags if t != os.environ['DAILY_TAG']]) == os.environ['CI_VERSION'], 'Competing release appeared; draft left unpublished'
+          PY
+          gh release edit "$DAILY_TAG" --draft=false --prerelease --latest=false
