@@ -15,6 +15,28 @@ def release(tag='daily-2026-10-10', **kwargs):
 
 
 class NightlyNotesTests(unittest.TestCase):
+    def test_source_gate_first_changed_unchanged_and_invalid(self):
+        self.assertTrue(n.has_source_changes(A, None))
+        self.assertTrue(n.has_source_changes(B, {'source_commit': A}))
+        self.assertFalse(n.has_source_changes(A, {'source_commit': A}))
+        with self.assertRaises(ValueError):
+            n.has_source_changes('master', None)
+
+    def test_moonlight_skip_ignores_failed_draft_stable_and_unpublished(self):
+        good = release('v6.2.0-daily.183')
+        candidates = [dict(good, tag_name='v6.2.0-daily.184', draft=True),
+                      dict(good, tag_name='v6.2.0-daily.185', published_at=None),
+                      dict(good, tag_name='v6.2.0-daily.186', prerelease=False), good]
+        previous = n.previous_release('Nonary/moonlight-qt', candidates, lambda asset: {},
+                                      lambda tag: A if tag == good['tag_name'] else B)
+        self.assertFalse(n.has_source_changes(A, previous))
+        self.assertTrue(n.has_source_changes(B, previous))
+
+    def test_generate_refuses_duplicate_moonlight_before_writing_assets(self):
+        with patch.object(n, 'run', return_value=A), patch.object(n, 'load_previous', return_value={'source_commit': A}):
+            with self.assertRaisesRegex(ValueError, 'Source unchanged'):
+                n.generate('Nonary/moonlight-qt', 'v6.2.0-daily.184', '6.2.0-daily.184', A, 'unused-assets', 'unused-notes')
+
     def notes(self, previous=None, commits=(), ancestor=True):
         return n.make_notes(REPO, 'daily-2026-10-11', '1.2.3-daily.d20261011+' + B[:12], B, previous, list(commits), ancestor)
 

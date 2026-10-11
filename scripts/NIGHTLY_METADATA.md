@@ -30,3 +30,13 @@ Metadata carries the full source SHA independently of application version displa
 First nightly notes explicitly claim no baseline or delta. Same-source nightlies explicitly say no source changes and rebuild. Divergent/rewound history warns that `git log previous..source` lists newly reachable commits, without claiming forward ancestry; an empty rewind delta is distinct from identical sources.
 
 Run focused offline checks with `python -m unittest discover -s scripts/tests -p test_nightly_notes.py -v`. No credential, signing, OS trust, release creation or network access is needed by these tests.
+# Unchanged-source policy
+
+Before allocating a build number or starting platform builds, the daily workflow
+compares its pinned source SHA with this repository's last successfully published
+nightly. Drafts, unpublished releases, stable releases and failed build runs do
+not advance that baseline. Matching source skips all platform jobs and publication;
+changed source (including changed CI code) qualifies for the next build number.
+Release-note generation rechecks the same baseline before creating a draft and
+refuses a duplicate source. API or metadata validation failures stop the workflow
+instead of assuming a new build is needed.

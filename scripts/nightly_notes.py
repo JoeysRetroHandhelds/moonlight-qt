@@ -112,11 +112,9 @@ def make_notes(repo, tag, version, source, previous, commits, ancestor=True):
     return '\n'.join(notes) + '\n', metadata
 
 
-def generate(repo, tag, version, source, assets, notes):
-    exact_sha(source)
-    sequence(repo, tag, version, source)
-    if run('git', 'rev-parse', source + '^{commit}') != source:
-        raise ValueError('Pinned source commit cannot be resolved exactly')
+def load_previous(repo):
+    if repo not in REPOSITORIES:
+        raise ValueError('Repository is not in the nightly allowlist')
     pages = json.loads(run('gh', 'api', '--paginate', '--slurp', f'repos/{repo}/releases?per_page=100'))
     def resolve(tag):
         return exact_sha(run('git', 'rev-parse', 'refs/tags/' + tag + '^{commit}'))
@@ -125,7 +123,22 @@ def generate(repo, tag, version, source, assets, notes):
         if not isinstance(asset_id, int) or asset_id <= 0:
             raise ValueError('Invalid metadata asset ID')
         return json.loads(run('gh', 'api', '-H', 'Accept: application/octet-stream', f'repos/{repo}/releases/assets/{asset_id}'))
-    previous = previous_release(repo, [r for page in pages for r in page], read_metadata, resolve)
+    return previous_release(repo, [r for page in pages for r in page], read_metadata, resolve)
+
+
+def has_source_changes(source, previous):
+    source = exact_sha(source)
+    return previous is None or exact_sha(previous['source_commit']) != source
+
+
+def generate(repo, tag, version, source, assets, notes):
+    exact_sha(source)
+    sequence(repo, tag, version, source)
+    if run('git', 'rev-parse', source + '^{commit}') != source:
+        raise ValueError('Pinned source commit cannot be resolved exactly')
+    previous = load_previous(repo)
+    if repo == 'Nonary/moonlight-qt' and not has_source_changes(source, previous):
+        raise ValueError('Source unchanged from the last published nightly; refusing duplicate publication')
     commits, ancestor = [], True
     if previous:
         old = previous['source_commit']

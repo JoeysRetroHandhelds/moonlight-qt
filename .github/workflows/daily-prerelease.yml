@@ -19,6 +19,7 @@ jobs:
     if: github.repository == 'Nonary/moonlight-qt' && github.ref == 'refs/heads/master' && vars.DAILY_RELEASE_SOURCE_BRANCH == 'master' && (github.event_name == 'workflow_dispatch' || vars.DAILY_RELEASE_ENABLED == 'true')
     runs-on: ubuntu-latest
     outputs:
+      should_release: ${{ steps.changes.outputs.should_release }}
       source_sha: ${{ steps.source.outputs.source_sha }}
       ci_version: ${{ steps.version.outputs.ci_version }}
       tag: ${{ steps.version.outputs.tag }}
@@ -33,15 +34,29 @@ jobs:
           git fetch origin refs/heads/master:refs/remotes/origin/master --tags
           sha=$(git rev-parse refs/remotes/origin/master)
           echo "source_sha=$sha" >> "$GITHUB_OUTPUT"
-      - name: Allocate monotonic Windows version
-        id: version
-        run: python3 scripts/daily-version.py
       - name: Test nightly notes and immutable metadata
         run: python3 -m unittest discover -s scripts/tests -p test_nightly_notes.py -v
       - name: Test release safeguards
         run: python3 -m unittest discover -s scripts/tests -p test_daily_release.py -v
+      - name: Skip unchanged source since last published nightly
+        id: changes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_SHA: ${{ steps.source.outputs.source_sha }}
+        run: |
+          set -euo pipefail
+          changed=$(python3 scripts/nightly_source.py --repo Nonary/moonlight-qt --source "$SOURCE_SHA")
+          echo "should_release=$changed" >> "$GITHUB_OUTPUT"
+          if [[ "$changed" == false ]]; then
+            echo 'Source unchanged from the last successfully published Moonlight nightly; skipping builds and publication.' | tee -a "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Allocate monotonic Windows version
+        if: steps.changes.outputs.should_release == 'true'
+        id: version
+        run: python3 scripts/daily-version.py
   windows:
     needs: prepare
+    if: needs.prepare.outputs.should_release == 'true'
     uses: ./.github/workflows/build-win-mac.yml
     with:
       ci_version: ${{ needs.prepare.outputs.ci_version }}
@@ -49,13 +64,14 @@ jobs:
       build_macos: true
   linux:
     needs: prepare
+    if: needs.prepare.outputs.should_release == 'true'
     uses: ./.github/workflows/build-appimage.yml
     with:
       ci_version: ${{ needs.prepare.outputs.ci_version }}
       source_ref: ${{ needs.prepare.outputs.source_sha }}
   publish:
     needs: [prepare, windows, linux]
-    if: needs.prepare.result == 'success' && needs.windows.result == 'success' && needs.linux.result == 'success' && vars.DAILY_RELEASE_ENABLED == 'true' && vars.DAILY_RELEASE_SOURCE_BRANCH == 'master' && (github.event_name == 'schedule' || inputs.publish)
+    if: needs.prepare.outputs.should_release == 'true' && needs.prepare.result == 'success' && needs.windows.result == 'success' && needs.linux.result == 'success' && vars.DAILY_RELEASE_ENABLED == 'true' && vars.DAILY_RELEASE_SOURCE_BRANCH == 'master' && (github.event_name == 'schedule' || inputs.publish)
     runs-on: ubuntu-latest
     permissions:
       contents: write
