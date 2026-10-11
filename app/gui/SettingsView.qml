@@ -4,6 +4,7 @@ import QtQuick.Layouts 1.3
 import QtQuick.Window 2.2
 
 import StreamingPreferences 1.0
+import AutoUpdateChecker 1.0
 import ComputerManager 1.0
 import ComputerModel 1.0
 import SdlGamepadKeyNavigation 1.0
@@ -2745,6 +2746,16 @@ Flickable {
                     ToolTip.timeout: 5000
                     ToolTip.visible: hovered
                     ToolTip.text: qsTr("This unlocks extremely high video bitrates for use with Sunshine hosts. It should only be used when streaming over an Ethernet LAN connection.")
+                }
+
+                CheckBox {
+                    width: parent.width
+                    text: qsTr("Notify me about prerelease and nightly updates")
+                    font.pointSize: 12
+                    checked: AutoUpdateChecker.notifyPrereleases
+                    onClicked: AutoUpdateChecker.notifyPrereleases = checked
+                    ToolTip.visible: hovered
+                    ToolTip.text: qsTr("Enabled by default. Turn off to receive only stable update notifications. Updates are never installed automatically.")
                 }
 
                 CheckBox {

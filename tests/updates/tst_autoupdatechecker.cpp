@@ -3,6 +3,8 @@
 #include <QNetworkReply>
 #include <QtTest>
 #include <cstring>
+#include <QSettings>
+#include <QTemporaryDir>
 
 class ReleaseReply : public QNetworkReply
 {
@@ -34,28 +36,108 @@ private:
     qint64 m_Offset = 0;
 };
 
+class RecordingManager : public QNetworkAccessManager
+{
+public:
+    QList<QUrl> requests;
+protected:
+    QNetworkReply* createRequest(Operation, const QNetworkRequest& request, QIODevice*) override
+    {
+        requests.append(request.url());
+        auto* reply = new ReleaseReply("[]");
+        reply->setParent(this);
+        return reply;
+    }
+};
+
 class AutoUpdateCheckerTest : public QObject
 {
     Q_OBJECT
 
     static QJsonObject release(const QString& tag, const QString& asset, bool prerelease = false)
     {
+        QString digest;
+        if (tag == "v6.1.0-vrr17.1") digest = "sha256:7cf6a4700676c3ee6597a519016374e6176fb8936de1c591eddca9dcd71c53c7";
+        if (tag == "v6.1.0-vrr18") digest = "sha256:900bf4e71bd8e4ff0fc7a01cd7ec08f073adc5da03a28d5968356b5dc72c795b";
         return {{"tag_name", tag}, {"draft", false}, {"prerelease", prerelease},
-                {"assets", QJsonArray{QJsonObject{{"name", asset}, {"state", "uploaded"}, {"size", 100}}}}};
+                {"assets", QJsonArray{QJsonObject{{"name", asset}, {"state", "uploaded"}, {"size", 100}, {"digest",digest}}}}};
     }
 
-    static QVector<int> version(const QString& string)
+    static QVector<int> version(const QString& string, bool windowsProduct = true)
     {
         QVector<int> result;
-        AutoUpdateChecker::parseVersion(string, result);
+        AutoUpdateChecker::parseVersion(string, result, windowsProduct);
         return result;
     }
 
+    QTemporaryDir settingsDirectory;
 private slots:
+    void initTestCase() {
+        QCoreApplication::setOrganizationName("MoonlightUpdateTests");
+        QCoreApplication::setApplicationName("IsolatedSettings");
+        QSettings::setDefaultFormat(QSettings::IniFormat);
+        QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, settingsDirectory.path());
+    }
+    void init() { QSettings().clear(); }
+    void defaultsMigrationAndPersistence() {
+        { AutoUpdateChecker checker; QVERIFY(checker.notifyPrereleases()); checker.setNotifyPrereleases(false); }
+        { AutoUpdateChecker checker; QVERIFY(!checker.notifyPrereleases()); checker.setNotifyPrereleases(true); }
+        AutoUpdateChecker checker; QVERIFY(checker.notifyPrereleases());
+        QSettings settings; settings.setValue("notifyPrereleases", false); settings.sync();
+        AutoUpdateChecker migrated; QVERIFY(!migrated.notifyPrereleases());
+    }
+    void stableOnlyAndDismissal() {
+        const QJsonArray releases{release("v6.1.0-vrr18", "MoonlightPortable-x64-6.1.0-vrr18.zip", true),
+            release("v6.3.0", "MoonlightPortable-x64-6.3.0.zip")};
+        QCOMPARE(AutoUpdateChecker::findUpdate(releases, version("6.1.0-vrr17.1"), "windows", "x86_64", false).value("tag_name").toString(), QString("v6.3.0"));
+        auto update = release("v6.1.0-vrr18", "MoonlightPortable-x64-6.1.0-vrr18.zip", true);
+        { AutoUpdateChecker checker; checker.dismissUpdate("6.1.0-vrr18"); }
+        AutoUpdateChecker checker; QSignalSpy notifications(&checker, &AutoUpdateChecker::onUpdateAvailable);
+        checker.announce(update); checker.announce(update);
+        QCOMPARE(notifications.size(), 0);
+        checker.setNotifyPrereleases(false);
+        checker.announce(release("v6.1.0-vrr19", "MoonlightPortable-x64-6.1.0-vrr19.zip", true));
+        QCOMPARE(notifications.size(), 0);
+        checker.announce(release("v6.3.0", "MoonlightPortable-x64-6.3.0.zip"));
+        QCOMPARE(notifications.size(), 1);
+    }
+    void unverifiedManualWindowsPackageStaysQuiet() {
+        auto replaced = release("v6.1.0-vrr18", "MoonlightPortable-x64-6.1.0-vrr18.zip", true);
+        auto assets = replaced["assets"].toArray();
+        auto package = assets[0].toObject(); package["digest"] = "sha256:unknown";
+        assets[0] = package; replaced["assets"] = assets;
+        QVERIFY(AutoUpdateChecker::findUpdate({replaced}, version("6.1.0-vrr17.1"), "windows", "x86_64").isEmpty());
+        auto unknown = release("v6.1.0-vrr99", "MoonlightPortable-x64-6.1.0-vrr99.zip", true);
+        QVERIFY(AutoUpdateChecker::findUpdate({unknown}, version("6.1.0-daily.181"), "windows", "x86_64").isEmpty());
+        QVERIFY(AutoUpdateChecker::compareVersion(version("6.1.0-daily.181", false), version("6.2.0", false)) < 0);
+    }
+    void actualInstalledWindowsVersion() {
+#ifdef Q_OS_WIN
+        QCOMPARE(AutoUpdateChecker::installedWindowsVersion(), QVector<int>({6, 2, 171, 0, 0}));
+#endif
+    }
+    void nightlyIdentityAndCompletion() {
+        auto nightly = release("v6.1.0-daily.181", "MoonlightPortable-x64-6.1.0-daily.181.zip", true);
+        auto assets=nightly["assets"].toArray();
+        for (const QString name : {"MoonlightSetup-6.1.0-daily.181.exe", "nightly-metadata.json", "SHA256SUMS"})
+            assets.append(QJsonObject{{"name",name},{"state","uploaded"},{"size",100}});
+        nightly["assets"]=assets;
+        QVERIFY(!AutoUpdateChecker::findUpdate({nightly}, version("6.1.0-vrr18"), "windows", "arm64").isEmpty());
+        QVERIFY(AutoUpdateChecker::findUpdate({nightly}, version("6.1.0-vrr18"), "windows", "i386").isEmpty());
+        QVERIFY(!AutoUpdateChecker::findUpdate({nightly}, version("6.1.0-vrr18"), "windows", "x86_64").isEmpty());
+        QVERIFY(AutoUpdateChecker::findUpdate({nightly}, version("6.1.0-daily.182"), "windows", "x86_64").isEmpty());
+        QVERIFY(AutoUpdateChecker::findUpdate({nightly}, version("6.1.0-vrr18"), "windows", "x86_64", false).isEmpty());
+        QJsonObject metadata{{"schema_version",1},{"channel","nightly"},{"tag","v6.1.0-daily.181"},{"version","6.1.0-daily.181"},{"nightly_sequence",181},{"windows_product_version","6.2.181"},{"source_commit",QString(40,'a')}};
+        QVERIFY(AutoUpdateChecker::validNightlyMetadata(nightly,metadata));
+        metadata["source_commit"]="bad"; QVERIFY(!AutoUpdateChecker::validNightlyMetadata(nightly,metadata));
+        nightly["assets"]=QJsonArray{}; QVERIFY(AutoUpdateChecker::findUpdate({nightly}, version("6.1.0-vrr18"), "windows", "x86_64").isEmpty());
+        QCOMPARE(AutoUpdateChecker::compareVersion(version("6.1.0-vrr17.2"),version("6.1.0-daily.172")),0);
+        QVERIFY(AutoUpdateChecker::compareVersion(version("6.1.0-daily.181"),version("6.2.0"))>0);
+    }
     void versionOrdering()
     {
         const QStringList ordered{"6.1.0", "v6.1.0-vrr9", "6.1.0-vrr10", "6.1.0-vrr17",
-                                  "6.1.0-vrr17.1", "6.1.0-vrr17.10", "6.1.0-vrr18", "6.2.0"};
+                                  "6.1.0-vrr17.1", "6.1.0-vrr17.2", "6.1.0-vrr18", "6.1.0-daily.181", "6.3.0"};
         for (int i = 1; i < ordered.size(); ++i) {
             QCOMPARE(AutoUpdateChecker::compareVersion(version(ordered[i - 1]), version(ordered[i])), -1);
             QCOMPARE(AutoUpdateChecker::compareVersion(version(ordered[i]), version(ordered[i - 1])), 1);
@@ -95,11 +177,11 @@ private slots:
             release("v6.1.0-vrr23", "MoonlightPortable-x86-6.1.0-vrr23.zip")};
         const auto current = version("6.1.0-vrr17.1");
         auto selectedTag = [&](const QString& platform, const QString& arch) {
-            return AutoUpdateChecker::findUpdate(releases, current, platform, arch).value("tag_name").toString();
+            return AutoUpdateChecker::findUpdate(releases, platform == "windows" ? current : version("6.1.0-vrr17.1", false), platform, arch).value("tag_name").toString();
         };
         QCOMPARE(selectedTag("windows", "x86_64"), QString("v6.1.0-vrr18"));
-        QCOMPARE(selectedTag("windows", "arm64"), QString("v6.1.0-vrr19"));
-        QCOMPARE(selectedTag("windows", "i386"), QString("v6.1.0-vrr23"));
+        QVERIFY(selectedTag("windows", "arm64").isEmpty());
+        QVERIFY(selectedTag("windows", "i386").isEmpty());
         QCOMPARE(selectedTag("appimage", "x86_64"), QString("v6.1.0-vrr20"));
         QVERIFY(selectedTag("appimage", "arm64").isEmpty());
         QCOMPARE(selectedTag("osx", "arm64"), QString("v6.1.0-vrr21"));
@@ -139,6 +221,33 @@ private slots:
 #endif
     }
 
+    void paginationWaitsForAllPages() {
+        AutoUpdateChecker checker;
+        delete checker.m_Nam;
+        auto* manager = new RecordingManager;
+        manager->setParent(&checker);
+        checker.m_Nam = manager;
+        QSignalSpy notifications(&checker, &AutoUpdateChecker::onUpdateAvailable);
+        QJsonArray page;
+        for (int i = 0; i < 100; ++i) page.append(release("v6.3.0", "MoonlightPortable-x64-6.3.0.zip"));
+        checker.handleUpdateCheckRequestFinished(new ReleaseReply(QJsonDocument(page).toJson()));
+        QCOMPARE(notifications.size(), 0);
+        QCOMPARE(manager->requests.size(), 1);
+        QVERIFY(manager->requests[0].query().contains("page=2"));
+        checker.handleUpdateCheckRequestFinished(new ReleaseReply("{}", QNetworkReply::ContentAccessDenied));
+        QCOMPARE(notifications.size(), 0);
+
+        AutoUpdateChecker complete;
+        delete complete.m_Nam;
+        complete.m_Nam = new RecordingManager;
+        complete.m_Nam->setParent(&complete);
+        QSignalSpy completed(&complete, &AutoUpdateChecker::onUpdateAvailable);
+        complete.handleUpdateCheckRequestFinished(new ReleaseReply(QJsonDocument(page).toJson()));
+        complete.handleUpdateCheckRequestFinished(new ReleaseReply("[]"));
+#if defined(Q_OS_WIN)
+        QCOMPARE(completed.size(), 1);
+#endif
+    }
     void failedResponsesStayQuiet()
     {
         for (const QByteArray& data : {QByteArray("bad json"), QByteArray("{\"message\":\"API rate limit exceeded\"}"), QByteArray("[]")}) {
