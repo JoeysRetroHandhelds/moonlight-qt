@@ -118,7 +118,7 @@ def moonlight_notes(repo, tag, version, previous, commits, compare, ancestor):
     notes = ['This is a nightly release of Moonlight and contains several bug fixes and may contain new features. Check the commit log for more information.',
              '', 'Moonlight builds are unsigned and may show an unverified publisher. macOS builds are not Developer ID signed or notarized. These nightly builds may trigger security warnings or false-positive antivirus alerts.']
     if version.startswith('6.2.0-daily.'):
-        notes += ['', 'Users of 6.1.0-daily.182 or earlier must download this update manually once; automatic nightly updates work after upgrading.']
+        notes += ['', 'Windows, Mac and AppImage users of 6.1.0-daily.182 or earlier must download this update manually once; automatic nightly update notifications work after upgrading.']
     notes += ['', f'[SHA256 checksums](https://github.com/{repo}/releases/download/{tag}/SHA256SUMS)',
               '', '### Linux installation', '',
               'Download either Linux x86_64 package below. For Flatpak, install Flatpak through your distribution\'s software manager first, then run:',
@@ -126,7 +126,7 @@ def moonlight_notes(repo, tag, version, previous, commits, compare, ancestor):
               'flatpak remote-add --user --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo',
               f'flatpak install --user --reinstall ./Moonlight-{version}-x86_64.flatpak',
               'flatpak run --user com.moonlight_stream.Moonlight//master', '```', '',
-              'This nightly uses the `master` branch; the regular Flathub package uses `stable`. On Steam Deck, install in Desktop Mode and add this nightly branch to Steam.',
+              'This nightly uses the `master` branch; the regular Flathub package uses `stable`. To update a Flatpak nightly, repeat the install command with the newer downloaded bundle. On Steam Deck, install in Desktop Mode and add this nightly branch to Steam.',
               '', 'For AppImage:', '', '```sh',
               f'chmod +x ./Moonlight-{version}-x86_64.AppImage',
               f'./Moonlight-{version}-x86_64.AppImage', '```', '',
