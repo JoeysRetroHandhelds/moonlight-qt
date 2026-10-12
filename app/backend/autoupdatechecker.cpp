@@ -216,6 +216,20 @@ int AutoUpdateChecker::compareVersion(const QVector<int>& version1, const QVecto
     return 0;
 }
 
+QJsonObject AutoUpdateChecker::apiNightlyMetadata(const QJsonObject& release)
+{
+    const auto body = release.value("body").toString();
+    const QString marker = QStringLiteral("<!-- nightly-identity: ");
+    const auto begin = body.indexOf(marker);
+    if (begin < 0 || (begin > 0 && body[begin - 1] != QChar('\n')) ||
+            body.indexOf(marker, begin + marker.size()) >= 0) return {};
+    const auto end = body.indexOf(QStringLiteral(" -->"), begin + marker.size());
+    if (end < 0) return {};
+    const auto document = QJsonDocument::fromJson(body.mid(begin + marker.size(), end - begin - marker.size()).toUtf8());
+    if (!document.isObject() || !validNightlyMetadata(release, document.object())) return {};
+    return document.object();
+}
+
 QJsonObject AutoUpdateChecker::findUpdate(const QJsonArray& releases, const QVector<int>& currentVersion,
                                         const QString& platform, const QString& architecture, bool allowPrereleases)
 {
@@ -265,7 +279,8 @@ QJsonObject AutoUpdateChecker::findUpdate(const QJsonArray& releases, const QVec
         if (tag.contains("-daily.")) {
             // Nightlies become visible only after all required package assets
             // have finished uploading; metadata is checked before announcing.
-            QStringList required{"nightly-metadata.json", "SHA256SUMS"};
+            QStringList required{"SHA256SUMS"};
+            if (apiNightlyMetadata(release).isEmpty()) continue;
             if (platform == "windows") {
                 required.append(QStringLiteral("MoonlightSetup-%1.exe").arg(versionString));
                 required.append(QStringLiteral("MoonlightPortable-x64-%1.zip").arg(versionString));
@@ -330,18 +345,8 @@ void AutoUpdateChecker::finishSelection()
 {
     m_Candidate = findUpdate(m_Releases, m_CurrentVersionQuad, getPlatform(), QSysInfo::buildCpuArchitecture(), notifyPrereleases());
     if (m_Candidate.isEmpty()) { stopCheck(); return; }
-    const auto tag = m_Candidate.value("tag_name").toString();
-    if (tag.contains("-daily.")) {
-        QNetworkRequest request(QUrl(QStringLiteral("https://github.com/Nonary/moonlight-qt/releases/download/%1/nightly-metadata.json").arg(tag)));
-        request.setRawHeader("User-Agent", "Moonlight-Nonary-UpdateChecker");
-#if QT_VERSION >= QT_VERSION_CHECK(5, 15, 0)
-        request.setTransferTimeout(20000);
-#endif
-        m_Nam->get(request);
-    } else {
-        announce(m_Candidate);
-        stopCheck();
-    }
+    announce(m_Candidate);
+    stopCheck();
 }
 
 void AutoUpdateChecker::handleUpdateCheckRequestFinished(QNetworkReply* reply)
@@ -355,22 +360,6 @@ void AutoUpdateChecker::handleUpdateCheckRequestFinished(QNetworkReply* reply)
     }
     QJsonParseError error;
     const auto document = QJsonDocument::fromJson(reply->readAll(), &error);
-    if (!m_Candidate.isEmpty()) {
-        if (document.isObject() && validNightlyMetadata(m_Candidate, document.object())) {
-            announce(m_Candidate);
-            stopCheck();
-        } else {
-            const auto invalidTag = m_Candidate.value("tag_name").toString();
-            QJsonArray remaining;
-            for (const auto& release : m_Releases)
-                if (release.toObject().value("tag_name").toString() != invalidTag) remaining.append(release);
-            m_Releases = remaining;
-            m_Candidate = {};
-            m_Checking = true;
-            finishSelection();
-        }
-        return;
-    }
     if (!document.isArray()) { stopCheck(); return; }
     for (const auto& release : document.array()) m_Releases.append(release);
     if (document.array().size() == 100) {

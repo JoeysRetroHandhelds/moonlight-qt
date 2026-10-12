@@ -193,6 +193,15 @@ def generate(repo, tag, version, source, assets, notes):
     root = Path(assets)
     if repo == 'Nonary/moonlight-qt':
         metadata['artifacts'] = artifact_metadata(root, source)
+    # API-visible identity is generated only after the existing qualification gates.
+    # The asset stays available for installed clients using the old contract.
+    if repo != 'Nonary/moonlight-qt':
+        evidence = root / 'daily-manifest.json'
+        if evidence.is_file():
+            metadata['qualification'] = json.loads(evidence.read_text(encoding='utf-8'))
+    if '<!-- nightly-identity: ' in body:
+        raise ValueError('Commit notes contain a reserved nightly identity marker')
+    body = '<!-- nightly-identity: ' + json.dumps(metadata, separators=(',', ':')) + ' -->\n' + body
     (root / 'nightly-metadata.json').write_text(json.dumps(metadata, indent=2) + '\n', encoding='utf-8')
     with Path(notes).open('a', encoding='utf-8') as output:
         output.write('\n' + body)

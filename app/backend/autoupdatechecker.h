@@ -41,6 +41,7 @@ private:
     void createNetworkManager();
     void finishSelection();
     void announce(const QJsonObject& release);
+    static QJsonObject apiNightlyMetadata(const QJsonObject& release);
     static bool validNightlyMetadata(const QJsonObject& release, const QJsonObject& metadata);
 
     QString getPlatform();

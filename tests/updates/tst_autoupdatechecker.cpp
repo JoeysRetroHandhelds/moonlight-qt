@@ -116,12 +116,22 @@ private slots:
         QCOMPARE(AutoUpdateChecker::installedWindowsVersion(), QVector<int>({6, 2, 171, 0, 0}));
 #endif
     }
+    static void embedIdentity(QJsonObject& release) {
+        const auto tag = release.value("tag_name").toString();
+        const auto v = tag.mid(1);
+        const int sequence = v.section('.', -1).toInt();
+        const QJsonObject metadata{{"schema_version", 1}, {"channel", "nightly"}, {"tag", tag},
+            {"version", v}, {"nightly_sequence", sequence}, {"windows_product_version", QString("6.2.%1").arg(sequence)},
+            {"source_commit", QString(40, 'a')}};
+        release["body"] = "<!-- nightly-identity: " + QString::fromUtf8(QJsonDocument(metadata).toJson(QJsonDocument::Compact)) + " -->\n";
+    }
     void nightlyIdentityAndCompletion() {
         auto nightly = release("v6.1.0-daily.181", "MoonlightPortable-x64-6.1.0-daily.181.zip", true);
         auto assets=nightly["assets"].toArray();
         for (const QString name : {"MoonlightSetup-6.1.0-daily.181.exe", "nightly-metadata.json", "SHA256SUMS"})
             assets.append(QJsonObject{{"name",name},{"state","uploaded"},{"size",100}});
         nightly["assets"]=assets;
+        embedIdentity(nightly);
         QVERIFY(!AutoUpdateChecker::findUpdate({nightly}, version("6.1.0-vrr18"), "windows", "arm64").isEmpty());
         QVERIFY(AutoUpdateChecker::findUpdate({nightly}, version("6.1.0-vrr18"), "windows", "i386").isEmpty());
         QVERIFY(!AutoUpdateChecker::findUpdate({nightly}, version("6.1.0-vrr18"), "windows", "x86_64").isEmpty());
@@ -143,6 +153,7 @@ private slots:
         for (const QString name : {"nightly-metadata.json", "SHA256SUMS"})
             assets.append(QJsonObject{{"name", name}, {"state", "uploaded"}, {"size", 100}});
         nightly["assets"] = assets;
+        embedIdentity(nightly);
         QCOMPARE(AutoUpdateChecker::findUpdate({nightly}, installed, "appimage", "x86_64")
                      .value("tag_name").toString(), QString("v6.1.0-daily.182"));
         QVERIFY(AutoUpdateChecker::findUpdate({nightly}, installed, "appimage", "arm64").isEmpty());
@@ -152,6 +163,7 @@ private slots:
         incomplete["state"] = "new";
         assets[0] = incomplete;
         nightly["assets"] = assets;
+        embedIdentity(nightly);
         QVERIFY(AutoUpdateChecker::findUpdate({nightly}, installed, "appimage", "x86_64").isEmpty());
     }
     void nightlyAppFamilyMigration()
@@ -169,6 +181,7 @@ private slots:
                                    "Moonlight-6.2.0-daily.183-x86_64.AppImage", "nightly-metadata.json", "SHA256SUMS"})
             assets.append(QJsonObject{{"name", name}, {"state", "uploaded"}, {"size", 100}});
         nightly["assets"] = assets;
+        embedIdentity(nightly);
         QCOMPARE(AutoUpdateChecker::findUpdate({nightly}, version("6.1.0-daily.182"), "windows", "x86_64")
                      .value("tag_name").toString(), QString("v6.2.0-daily.183"));
         QVERIFY(!AutoUpdateChecker::findUpdate({nightly}, version("6.1.0-daily.182"), "windows", "arm64").isEmpty());
@@ -186,6 +199,29 @@ private slots:
         for (const QString invalid : {"6.2.0-daily.0", "6.2.0-daily.65536", "6.2.0-daily.183.1",
                                       "6.2.1-daily.183", "6.3.0-daily.183", "6.2.0-vrr19"})
             QVERIFY(version(invalid).isEmpty());
+    }
+    void apiIdentityFailsClosedWithoutAssetRequests() {
+        auto nightly = release("v6.2.0-daily.183", "MoonlightPortable-x64-6.2.0-daily.183.zip", true);
+        auto assets = nightly["assets"].toArray();
+        for (const QString name : {"MoonlightSetup-6.2.0-daily.183.exe", "SHA256SUMS"})
+            assets.append(QJsonObject{{"name", name}, {"state", "uploaded"}, {"size", 100}});
+        nightly["assets"] = assets;
+        embedIdentity(nightly);
+        QVERIFY(!AutoUpdateChecker::findUpdate({nightly}, version("6.1.0-daily.182"), "windows", "x86_64").isEmpty());
+        auto duplicate = nightly;
+        duplicate["body"] = nightly["body"].toString() + nightly["body"].toString();
+        QVERIFY(AutoUpdateChecker::findUpdate({duplicate}, version("6.1.0-daily.182"), "windows", "x86_64").isEmpty());
+        auto* manager = new RecordingManager;
+        AutoUpdateChecker checker;
+        delete checker.m_Nam;
+        checker.m_Nam = manager;
+        checker.m_Releases = {nightly};
+        checker.m_CurrentVersionQuad = version("6.1.0-daily.182");
+        checker.finishSelection();
+        QCOMPARE(manager->requests.size(), 0);
+        QVERIFY(!checker.m_Checking);
+        nightly.remove("body");
+        QVERIFY(AutoUpdateChecker::findUpdate({nightly}, version("6.1.0-daily.182"), "windows", "x86_64").isEmpty());
     }
     void versionOrdering()
     {
