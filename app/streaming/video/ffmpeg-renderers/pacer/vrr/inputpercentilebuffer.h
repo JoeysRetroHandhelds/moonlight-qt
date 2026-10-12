@@ -14,11 +14,11 @@ namespace Vrr13 {
 // backlog and policy holds removed by the caller. Capacity/packet-loss/basis
 // eligibility is also owned by the caller, not inferred from input lateness.
 //
-// vrrHeadroomUs is the VRR recovery headroom at the current source rate
-// (source period minus the larger of display period and typical render). A
-// lower frame rate leaves more of each period free to absorb lateness, so it
-// is subtracted from every requirement exactly like the VRR17 smoothness path;
-// 30 FPS must never hold more buffer than 60 or 120 FPS for the same jitter.
+// vrrHeadroomUs is usable recovery credit supplied by the caller. Current
+// bounded catch-up limits it by both physical VRR room and the interval
+// allowance. Historical callers retain their recorded credit. Requirements
+// may also carry a clockOffsetUs so retained measurements share an immutable
+// source coordinate; historical coverage outcomes keep their observed budget.
 class InputPercentileBuffer {
 public:
     // Compatibility only: raw stage misses no longer arm a hard hold.
@@ -45,7 +45,7 @@ public:
         uint64_t raises = 0, lowers = 0, unknownRelease = 0, epochResets = 0;
         uint64_t observationSpanUs = 0, validPairCoverageUs = 0;
         uint64_t probabilityPpm = 0, windowUs = 0, toleranceUs = 0, vrrHeadroomUs = 0;
-        int64_t readinessBudgetUs = 0;
+        int64_t readinessBudgetUs = 0, clockOffsetUs = 0;
         uint64_t headroomTargetUnclippedUs = 0;
         int64_t rawRequiredQuantileUs = 0;
         bool tailUncertain = true, evidenceValid = false;
@@ -75,7 +75,7 @@ public:
         m_Stats.samples = m_Stats.observationSpanUs = m_Stats.validPairCoverageUs = 0;
         m_Stats.recentEligible = m_Stats.recentAbsorbed = m_Stats.recentMissed = 0;
         updateReleaseFeedback(m_LastClockUs);
-        m_Stats.rawRequiredQuantileUs = 0;
+        m_SourceRelativeQuantileUs = m_Stats.rawRequiredQuantileUs = 0;
         m_Stats.headroomTargetUnclippedUs = m_Stats.currentUs;
         m_Stats.tailUncertain = true;
         m_Stats.evidenceValid = m_Stats.historyTruncated = m_Stats.clipped = false;
@@ -176,9 +176,9 @@ public:
     void advance(uint64_t atUs, uint64_t minimum, uint64_t maximum,
                  uint64_t probabilityPpm, uint64_t windowUs,
                  uint64_t riseRate, uint64_t fallRate, int64_t readinessBudgetUs = 0, uint64_t toleranceUs = 0,
-                 uint64_t vrrHeadroomUs = 0) {
+                 uint64_t vrrHeadroomUs = 0, int64_t clockOffsetUs = 0) {
         if (!atUs || (m_LastClockUs && atUs < m_LastClockUs)) return;
-        configure(minimum, maximum, probabilityPpm, windowUs, riseRate, fallRate, readinessBudgetUs, toleranceUs, vrrHeadroomUs);
+        configure(minimum, maximum, probabilityPpm, windowUs, riseRate, fallRate, readinessBudgetUs, toleranceUs, vrrHeadroomUs, clockOffsetUs);
         const uint64_t elapsed = advanceClock(atUs);
         evaluate(atUs, expire(atUs));
         move(elapsed, false);
@@ -187,15 +187,15 @@ public:
         if (!m_Stats.initialized || !m_Stats.windowUs) return;
         advance(atUs, m_Stats.minimumUs, m_Stats.maximumUs, m_Stats.probabilityPpm,
             m_Stats.windowUs, m_RiseRate, m_FallRate, m_Stats.readinessBudgetUs, m_Stats.toleranceUs,
-            m_Stats.vrrHeadroomUs);
+            m_Stats.vrrHeadroomUs, m_Stats.clockOffsetUs);
     }
     void observe(uint64_t frame, uint64_t observationUs, uint64_t slotUs,
                  int64_t requiredUs, bool valid, uint64_t minimum,
                  uint64_t maximum, uint64_t probabilityPpm,
                  uint64_t windowUs, uint64_t riseRate, uint64_t fallRate,
                  int64_t readinessBudgetUs = 0, uint64_t toleranceUs = 0,
-                 uint64_t vrrHeadroomUs = 0) {
-        configure(minimum, maximum, probabilityPpm, windowUs, riseRate, fallRate, readinessBudgetUs, toleranceUs, vrrHeadroomUs);
+                 uint64_t vrrHeadroomUs = 0, int64_t clockOffsetUs = 0) {
+        configure(minimum, maximum, probabilityPpm, windowUs, riseRate, fallRate, readinessBudgetUs, toleranceUs, vrrHeadroomUs, clockOffsetUs);
         // An observation can follow advance() at the same timestamp. Actual
         // duplicate/nonmonotonic observations still invalidate their history.
         if (!observationUs || (m_LastObservationUs && observationUs <= m_LastObservationUs) ||
@@ -236,7 +236,7 @@ public:
                 std::numeric_limits<int64_t>::max() : readinessBudgetUs < 0 &&
                 requiredUs < std::numeric_limits<int64_t>::min() - readinessBudgetUs ?
                 std::numeric_limits<int64_t>::min() : requiredUs + readinessBudgetUs;
-            m_Samples.push_back({observationUs, slotUs, rawRequired, m_Epoch, absorbed, missed});
+            m_Samples.push_back({observationUs, slotUs, offsetSum(rawRequired, clockOffsetUs), m_Epoch, absorbed, missed});
             ++m_Stats.recentEligible;
             m_Stats.recentAbsorbed += absorbed;
             m_Stats.recentMissed += missed;
@@ -262,9 +262,23 @@ public:
         move(m_Stats.targetUs > m_Stats.currentUs ? observationElapsed : elapsed, eligible);
     }
 private:
+    static int64_t offsetSum(int64_t value, int64_t offset) {
+        constexpr auto lo = std::numeric_limits<int64_t>::min();
+        constexpr auto hi = std::numeric_limits<int64_t>::max();
+        if (offset > 0 && value > hi - offset) return hi;
+        if (offset < 0 && value < lo - offset) return lo;
+        return value + offset;
+    }
+    static int64_t offsetDifference(int64_t value, int64_t offset) {
+        constexpr auto lo = std::numeric_limits<int64_t>::min();
+        constexpr auto hi = std::numeric_limits<int64_t>::max();
+        if (offset > 0 && value < lo + offset) return lo;
+        if (offset < 0 && value > hi + offset) return hi;
+        return value - offset;
+    }
     void configure(uint64_t minimum, uint64_t maximum, uint64_t probabilityPpm,
                    uint64_t windowUs, uint64_t riseRate, uint64_t fallRate, int64_t budget, uint64_t tolerance,
-                   uint64_t vrrHeadroom) {
+                   uint64_t vrrHeadroom, int64_t clockOffset) {
         minimum = std::min(minimum, maximum);
         if (!m_Stats.initialized) {
             m_Stats.initialized = true;
@@ -279,6 +293,7 @@ private:
         m_Stats.readinessBudgetUs = budget;
         m_Stats.toleranceUs = tolerance;
         m_Stats.vrrHeadroomUs = vrrHeadroom;
+        m_Stats.clockOffsetUs = clockOffset;
         m_RiseRate = std::min<uint64_t>(riseRate, 1000000);
         m_FallRate = std::min<uint64_t>(fallRate, 1000000);
     }
@@ -309,8 +324,9 @@ private:
         uint64_t misses = 0;
         for (auto it = m_Samples.rbegin(); it != m_Samples.rend(); ++it) {
             if (atUs - it->at >= ReleaseFeedbackWindowUs) break;
-            const uint64_t required = it->required > m_Stats.readinessBudgetUs ?
-                uint64_t(it->required) - uint64_t(m_Stats.readinessBudgetUs) : 0;
+            const int64_t relativeRequired = offsetDifference(it->required, m_Stats.clockOffsetUs);
+            const uint64_t required = relativeRequired > m_Stats.readinessBudgetUs ?
+                uint64_t(relativeRequired) - uint64_t(m_Stats.readinessBudgetUs) : 0;
             const uint64_t excess = required - std::min(required, m_Stats.toleranceUs);
             misses += excess - std::min(excess, m_Stats.vrrHeadroomUs) > candidate;
         }
@@ -348,7 +364,7 @@ private:
         m_Stats.expiredUnknown = m_Samples.empty() && atUs -
             (m_LastEligibleUs ? m_LastEligibleUs : m_FirstObservationUs) >= windowUs;
         if (m_Samples.empty()) {
-            m_Stats.rawRequiredQuantileUs = 0;
+            m_SourceRelativeQuantileUs = m_Stats.rawRequiredQuantileUs = 0;
             m_Stats.headroomTargetUnclippedUs = 0;
             m_Stats.validPairCoverageUs = 0;
             m_Stats.tailUncertain = true;
@@ -381,8 +397,12 @@ private:
             const size_t rank = m_Stats.tailUncertain ? values.size() :
                 size_t((probabilityPpm * values.size() + 999999) / 1000000);
             std::nth_element(values.begin(), values.begin() + rank - 1, values.end());
-            m_Stats.rawRequiredQuantileUs = values[rank - 1];
+            m_SourceRelativeQuantileUs = values[rank - 1];
         }
+        // Retained requirements use an immutable RTP/source coordinate. Only
+        // this projection into the current local clock changes with mapping.
+        // Observed historical misses continue to use each original budget.
+        m_Stats.rawRequiredQuantileUs = offsetDifference(m_SourceRelativeQuantileUs, m_Stats.clockOffsetUs);
         // Unsigned subtraction preserves the positive signed difference even
         // when the normalized requirement and budget span the signed range.
         const int64_t budget = m_Stats.readinessBudgetUs;
@@ -433,6 +453,7 @@ private:
             }
         }
     }
+    int64_t m_SourceRelativeQuantileUs = 0;
     struct Sample { uint64_t at, slot; int64_t required; uint64_t epoch; bool absorbed, missed; bool seed = false; };
     std::deque<Sample> m_Samples;
     Stats m_Stats;

@@ -33,6 +33,7 @@ VrrSessionConfig experimentalInputConfig(VrrSessionConfig config)
 {
     const auto mode = qEnvironmentVariable("MOONLIGHT_VRR_EXPERIMENTAL_ADAPTIVE_BUFFER");
     if (mode == "0") return config;
+    config.correctInputAccounting = qEnvironmentVariable("MOONLIGHT_VRR_INPUT_ACCOUNTING") != "0";
     config.experimentalBoundedCatchup = qEnvironmentVariable("MOONLIGHT_VRR_BOUNDED_CATCHUP") != "0";
     // Preferences already resolved preset/custom precedence at session creation.
     // The profile supplies the target; there is no second target.

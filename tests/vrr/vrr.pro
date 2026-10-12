@@ -97,3 +97,7 @@ SUBDIRS += inputpercentileintegration
 
 performancestats.file = $$PWD/performancestats.pro
 SUBDIRS += performancestats
+
+# Clock-relative history and bounded recovery credit regression.
+SUBDIRS += inputaccounting
+inputaccounting.file = $$PWD/inputaccounting.pro

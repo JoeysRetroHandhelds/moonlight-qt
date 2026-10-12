@@ -1,3 +1,18 @@
+Main input-accounting correction (2026-10-12): current bounded-catch-up sessions serialize
+`playout_input_clock_relative_history=1` and
+`playout_input_bounded_recovery_credit=1`; absent fields keep historical captures
+exactly replayable. Retained input requirements share an immutable source-clock
+coordinate and are projected into the current mapping for demand. Historical
+coverage outcomes keep their original protection. Input recovery credit is
+bounded by the configured interval allowance as well as physical VRR room;
+PhaseTrajectory still uses physical room and its existing gradual repayment.
+Profile target/history/tolerance, producer clock estimator, conditional decode
+hold, rate layers and 250us/s release remain. Legacy unbounded catch-up retains
+its original accounting. Diagnostic
+`MOONLIGHT_VRR_INPUT_ACCOUNTING=0` selects the historical control in the same
+binary. Tests and frozen capture guards establish software behavior; live
+GPU/compositor behavior requires a coordinated comparison.
+
 # Streaming, VRR, and timing architecture
 
 This is the persistent technical orientation for this fork. Read it at the start

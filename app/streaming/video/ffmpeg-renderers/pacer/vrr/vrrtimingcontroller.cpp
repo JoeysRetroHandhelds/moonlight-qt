@@ -207,6 +207,8 @@ VrrTimingParameters vrrTimingParametersForSession(
     parameters.boundedCatchupEnabled = config.experimentalBoundedCatchup;
     parameters.normalizedSourceMapping = config.experimentalBoundedCatchup;
     if (parameters.playoutInputPercentileEnabled) {
+        parameters.playoutInputClockRelativeHistory = config.correctInputAccounting && config.experimentalBoundedCatchup;
+        parameters.playoutInputBoundedRecoveryCredit = config.correctInputAccounting && config.experimentalBoundedCatchup;
         parameters.playoutInputPercentileTargetPerMillion = uint64_t(options.targetHundredths) * 100;
         // Explicit zero default preserves strict input coverage in old traces.
         parameters.playoutInputPercentileToleranceUs = options.toleranceUs;
@@ -1305,6 +1307,8 @@ VrrTimingDecision VrrTimingController::schedule(const PacedFrame& frame,
     m_Pending.inputObservationUs = nowUs;
     m_Pending.inputSlotUs = addSigned(m_Pending.intervalIntendedUs, decision.readinessBudgetUs);
     m_Pending.inputReadinessBudgetUs = decision.readinessBudgetUs;
+    m_Pending.inputClockOffsetUs = m_Parameters.playoutInputClockRelativeHistory &&
+        m_Parameters.normalizedSourceMapping && m_PlayoutOffsetValid ? m_AppliedPlayoutOffsetUs : 0;
     // Readiness is the (estimated) decode completion: PyroWave's decoder
     // output is only GPU submission, and GPU decode variation is jitter the
     // buffer must cover. Completions observed after a queue wait are bounded
@@ -2405,7 +2409,7 @@ void VrrTimingController::noteSubmission(bool submitted, bool cancelled,
                     m_Parameters.playoutInputPercentileRiseUsPerSecond,
                     m_Parameters.playoutInputPercentileFallUsPerSecond,
                     m_Pending.inputReadinessBudgetUs, m_Parameters.playoutInputPercentileToleranceUs,
-                    recoveryHeadroomUs());
+                    inputRecoveryCreditUs(), m_Pending.inputClockOffsetUs);
             }
         }
         else m_MeanMissBuffer.observe(submissionUs, ready > deadline ? ready - deadline : 0,
@@ -2831,6 +2835,16 @@ uint64_t VrrTimingController::recoveryHeadroomUs() const
 {
     const uint64_t occupied = std::max(m_DisplayPeriodUs, typicalRenderUs());
     return m_SourcePeriodUs > occupied ? m_SourcePeriodUs - occupied : 0;
+}
+
+uint64_t VrrTimingController::inputRecoveryCreditUs() const
+{
+    const uint64_t physicalRoomUs = recoveryHeadroomUs();
+    if (!m_Parameters.playoutInputBoundedRecoveryCredit) return physicalRoomUs;
+    // A physical refresh gap is not permission to spend the entire gap in
+    // one interval. Preserve free recovery credit only within the configured
+    // cadence allowance; the trajectory still owns and gradually spends it.
+    return std::min(physicalRoomUs, intervalQualityToleranceUs(m_Parameters));
 }
 
 uint64_t VrrTimingController::scaledDisplayPeriodUs(
@@ -3639,7 +3653,7 @@ void VrrTimingController::updatePlayoutHistory(
     if (m_Parameters.playoutPredictionOnly) {
         if (m_Parameters.playoutResponsiveBuffer >= 5) {
             if (m_Parameters.playoutInputPercentileEnabled) {
-                const uint64_t vrrHeadroomUs = recoveryHeadroomUs();
+                const uint64_t vrrHeadroomUs = inputRecoveryCreditUs();
                 if (!m_InputPercentileBuffer.stats().initialized) {
                     m_InputPercentileBuffer.reset(m_AppliedPlayoutDelayUs);
                     m_InputLayerPeriodUs = m_SourcePeriodUs;
@@ -3679,7 +3693,8 @@ void VrrTimingController::updatePlayoutHistory(
                     m_Parameters.playoutInputPercentileRiseUsPerSecond,
                     m_Parameters.playoutInputPercentileFallUsPerSecond,
                     m_ReadinessBudgetUs, m_Parameters.playoutInputPercentileToleranceUs,
-                    vrrHeadroomUs);
+                    vrrHeadroomUs, m_Parameters.playoutInputClockRelativeHistory &&
+                        m_Parameters.normalizedSourceMapping && m_PlayoutOffsetValid ? m_AppliedPlayoutOffsetUs : 0);
                 m_InputPercentileBuffer.raiseForHeadroomLoss(lostHeadroomUs);
                 const uint64_t demand = m_InputPercentileBuffer.demand(m_AppliedPlayoutDelayUs);
                 m_UnclampedRequestedPlayoutDelayUs = m_InputPercentileBuffer.stats().clipped ?

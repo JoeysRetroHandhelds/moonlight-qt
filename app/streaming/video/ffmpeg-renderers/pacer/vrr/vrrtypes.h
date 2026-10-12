@@ -40,6 +40,8 @@ struct VrrSessionConfig {
     VrrTimingOptions timingOptions;
     // Experimental activation marker; zero keeps normal policy. The effective
     // profile smoothness target supplies probability (never this marker value).
+    // Main policy; a diagnostic control can select historical accounting.
+    bool correctInputAccounting = true;
     bool experimentalBoundedCatchup = false;
     uint64_t experimentalInputPercentilePpm = 0;
     uint64_t experimentalInputPercentileWindowUs = 60000000;

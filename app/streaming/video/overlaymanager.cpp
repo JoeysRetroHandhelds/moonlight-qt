@@ -317,7 +317,7 @@ SDL_Surface* composeTimingGraph(TTF_Font* font, SDL_Surface* text, const TimingG
         hitches.observedFrames ? hitches.measuredFrames * 100.0 / hitches.observedFrames : 0.0);
     label(caption, left, height - S(60), labelColor);
     if (adaptiveInput && latestPoint.inputVrrHeadroomUs) {
-        std::snprintf(caption, sizeof(caption), "VRR room %.2f ms removed; red X beyond buffer + tolerance",
+        std::snprintf(caption, sizeof(caption), "VRR recovery credit %.2f ms; red X beyond buffer + tolerance",
             latestPoint.inputVrrHeadroomUs / 1000.0);
         label(caption, left, height - S(40), labelColor);
     }

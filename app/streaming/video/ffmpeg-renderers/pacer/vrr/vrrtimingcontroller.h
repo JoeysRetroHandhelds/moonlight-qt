@@ -32,6 +32,9 @@
     X(uint64_t, playout_absorbed_jitter_release, playoutAbsorbedJitterRelease, 0) \
     X(uint64_t, bounded_catchup_enabled, boundedCatchupEnabled, 0) \
     X(uint64_t, normalized_source_mapping, normalizedSourceMapping, 0) \
+    /* Zero preserves historical capture accounting. */ \
+    X(uint64_t, playout_input_clock_relative_history, playoutInputClockRelativeHistory, 0) \
+    X(uint64_t, playout_input_bounded_recovery_credit, playoutInputBoundedRecoveryCredit, 0) \
     X(uint64_t, playout_input_percentile_enabled, playoutInputPercentileEnabled, 0) \
     X(uint64_t, playout_input_percentile_target_per_million, playoutInputPercentileTargetPerMillion, 990000) \
     X(uint64_t, playout_input_percentile_window_us, playoutInputPercentileWindowUs, 60000000) \
@@ -463,6 +466,7 @@ public:
 
     uint64_t timingBudgetUs() const;
     int64_t readinessBudgetUs() const;
+    uint64_t inputRecoveryCreditUs() const;
     uint64_t headroomUs() const;
     uint64_t sourcePeriodUs() const;
     uint64_t displayPeriodUs() const;
@@ -548,6 +552,7 @@ private:
         uint64_t inputObservationUs = 0;
         int64_t inputReadinessBudgetUs = 0;
         int64_t inputRequiredUs = 0;
+        int64_t inputClockOffsetUs = 0;
         bool inputValid = false;
         bool intervalValid = false;
         bool trajectoryValid = false;
