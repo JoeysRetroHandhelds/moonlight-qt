@@ -244,6 +244,7 @@ PyroWaveLink::Result NvHTTP::probePyroWaveUdp(int kbps, int packetSize, const st
     PyroWaveUdp::ReceiverTiming timing(socket);
     result.kernelArrivalTimestamps = timing.usesKernelTimestamps();
     bool missingTimestamp = false;
+    quint64 authenticatedPackets = 0;
     const auto receive = [&] {
         char packet[2048];
         // Bound a callback so HTTP completion/timeouts cannot starve if other
@@ -258,6 +259,7 @@ PyroWaveLink::Result NvHTTP::probePyroWaveUdp(int kbps, int packetSize, const st
                 (useHandshake ? !handshake.acceptsSource(source, sourcePort) : source != host) ||
                 memcmp(packet, token.constData(), 32) != 0 || cancelled.load()) continue;
             handshake.receivedPacket();
+            ++authenticatedPackets;
             const auto seq = qFromBigEndian<quint32>(reinterpret_cast<const uchar*>(packet + 32));
             if (seq < arrivals.size() && arrivals[seq] < 0) {
                 if (arrivalUs < 0) { missingTimestamp = true; continue; }
@@ -277,11 +279,23 @@ PyroWaveLink::Result NvHTTP::probePyroWaveUdp(int kbps, int packetSize, const st
             handshake.start(response->rawHeader("X-PyroWave-Udp-Port"));
             return handshake.errorString();
         }) : std::function<QString(QNetworkReply*)>();
-    QNetworkReply* networkReply = openConnection(probeUrl, "pyrowave-udp-probe",
-        (QString("kbps=%1&port=%2&packetsize=%3&token=%4") + (useHandshake ? "&handshake=1" : "") +
-         (burstFps ? QString("&fps=%1&pacekbps=%2").arg(burstFps).arg(paceKbps) : QString()))
-            .arg(kbps).arg(socket.localPort()).arg(packetSize).arg(QString::fromLatin1(token)),
-        6000, NVLL_ERROR, receiveHeaders);
+    QNetworkReply* networkReply;
+    try {
+        networkReply = openConnection(probeUrl, "pyrowave-udp-probe",
+            (QString("kbps=%1&port=%2&packetsize=%3&token=%4") + (useHandshake ? "&handshake=1" : "") +
+             (burstFps ? QString("&fps=%1&pacekbps=%2").arg(burstFps).arg(paceKbps) : QString()))
+                .arg(kbps).arg(socket.localPort()).arg(packetSize).arg(QString::fromLatin1(token)),
+            6000, NVLL_ERROR, receiveHeaders);
+    }
+    catch (const QtNetworkReplyException& error) {
+        if (error.getError() != QNetworkReply::TimeoutError || cancelled.load()) throw;
+        const QString detail = useHandshake ? handshake.timeoutDescription(authenticatedPackets) :
+            tr("Legacy probe to %1, receiver port %2, authenticated packets %3")
+                .arg(host.toString()).arg(socket.localPort()).arg(authenticatedPackets);
+        const QString message = tr("PyroWave UDP test timed out after 6000 ms: %1. No bandwidth recommendation is available.").arg(detail);
+        qWarning().noquote() << message;
+        throw QtNetworkReplyException(QNetworkReply::TimeoutError, message);
+    }
     const QString reply = QString::fromUtf8(networkReply->readAll());
     delete networkReply;
     if (useHandshake && !handshake.started()) {
@@ -689,6 +703,14 @@ NvHTTP::openConnection(QUrl baseUrl,
     {
         if (logLevel >= NvLogLevel::NVLL_ERROR) {
             qWarning() << "Aborting timed out request for" << url.toString();
+            if (command == "pyrowave-udp-probe") {
+                qWarning() << "PyroWave probe HTTP progress: status"
+                           << reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt()
+                           << "body bytes" << reply->bytesAvailable()
+                           << "content length" << reply->rawHeader("Content-Length")
+                           << "transfer encoding" << reply->rawHeader("Transfer-Encoding")
+                           << "connection" << reply->rawHeader("Connection");
+            }
         }
         reply->abort();
     }

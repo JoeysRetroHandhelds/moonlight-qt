@@ -715,6 +715,15 @@ Normal status/count/timing validation and the reordered UDP-tail drain still run
 partial or malformed XML and content-length/chunked responses require normal HTTP
 completion. This compatibility path does not certify the link or replace fresh
 capacity and pace measurements.
+The Mac transport follow-up adds localhost native TLS fixtures for both EOF
+and retained-connection results. Timeouts report whether a valid sender port
+was announced, how many receiver-socket tokens were sent, and whether
+authenticated measured packets arrived; HTTP diagnostics record status, body
+bytes and framing. These distinguish handshake/transport failures from result
+completion failures without declaring bandwidth or attributing a firewall cause.
+Complete terminal status-500 XML with a host error message also ends the wait;
+normal response-status validation throws that reason before any result scoring.
+Partial errors still require completion and never become successful measurements.
 The 2026-10-04 UI follow-up gives the four target cards equal widths and short
 budget descriptions, highlights the next useful action, and groups connection
 progress and the confirmed budget in a status panel. The first screen is 480

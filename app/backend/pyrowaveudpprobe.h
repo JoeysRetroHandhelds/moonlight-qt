@@ -12,7 +12,7 @@ class QUdpSocket;
 class QNetworkReply;
 
 namespace PyroWaveUdp {
-// Compatibility for handshake hosts that send complete XML but retain their
+// Compatibility for handshake hosts that send complete success/error XML but retain their
 // close-delimited HTTP connection. Never bypass explicit HTTP body framing.
 bool completeCloseDelimitedResponse(QNetworkReply& reply);
 
@@ -33,6 +33,7 @@ public:
     void receivedPacket() { m_Retry.stop(); }
     QString errorString() const { return m_Error; }
     bool started() const { return m_Port != 0; }
+    QString timeoutDescription(quint64 receivedPackets) const;
 private:
     void sendToken();
     QUdpSocket& m_Socket;
@@ -41,6 +42,7 @@ private:
     const std::atomic<bool>& m_Cancelled;
     QTimer m_Retry;
     quint16 m_Port = 0;
+    quint64 m_SentTokens = 0;
     QString m_Error;
 };
 

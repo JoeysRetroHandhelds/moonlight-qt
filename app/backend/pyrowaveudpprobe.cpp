@@ -72,8 +72,15 @@ bool PyroWaveUdp::completeCloseDelimitedResponse(QNetworkReply& reply)
     // Peek leaves the body intact for NvHTTP's normal status/count validation.
     // Parsing the entire bounded document rejects partial XML and trailing junk.
     QXmlStreamReader xml(reply.peek(4096));
-    if (!xml.readNextStartElement() || xml.name() != QStringLiteral("root") ||
-        xml.attributes().value("status_code") != QStringLiteral("200")) return false;
+    if (!xml.readNextStartElement() || xml.name() != QStringLiteral("root")) return false;
+    const auto statusCode = xml.attributes().value("status_code").toString();
+    const bool success = statusCode == QStringLiteral("200");
+    // The host can fail after announcing the UDP port. Its terminal XML error
+    // also needs delivery before EOF; NvHTTP::verifyResponseStatus then throws
+    // the host's reason rather than converting it to a bandwidth result.
+    const bool hostError = statusCode == QStringLiteral("500") &&
+        !xml.attributes().value("status_message").trimmed().isEmpty();
+    if (!success && !hostError) return false;
     bool expected = false, sent = false, elapsed = false;
     while (xml.readNextStartElement()) {
         expected |= xml.name() == QStringLiteral("expected");
@@ -82,7 +89,7 @@ bool PyroWaveUdp::completeCloseDelimitedResponse(QNetworkReply& reply)
         xml.skipCurrentElement();
     }
     while (!xml.atEnd()) xml.readNext();
-    return !xml.hasError() && expected && sent && elapsed;
+    return !xml.hasError() && (hostError || (expected && sent && elapsed));
 }
 
 QHostAddress PyroWaveUdp::bindReceiver(QUdpSocket& socket, const QString& hostname,
@@ -164,6 +171,18 @@ void PyroWaveUdp::ProbeHandshake::sendToken()
         m_Error = QStringLiteral("Could not send the PyroWave UDP handshake: %1").arg(m_Socket.errorString());
         m_Retry.stop();
     }
+    else ++m_SentTokens;
+}
+
+QString PyroWaveUdp::ProbeHandshake::timeoutDescription(quint64 receivedPackets) const
+{
+    const QString phase = !m_Error.isEmpty() ? m_Error :
+        m_Port == 0 ? QStringLiteral("No valid HTTPS sender-port announcement arrived") :
+        receivedPackets == 0 ? QStringLiteral("No authenticated measured UDP packets arrived after the handshake") :
+        QStringLiteral("Measured UDP packets arrived, but the HTTPS result did not complete");
+    return QStringLiteral("%1 (host %2, receiver port %3, sender port %4, tokens sent %5, authenticated packets %6)")
+        .arg(phase, m_Host.toString()).arg(m_Socket.localPort()).arg(m_Port)
+        .arg(m_SentTokens).arg(receivedPackets);
 }
 
 bool PyroWaveUdp::ProbeHandshake::acceptsSource(const QHostAddress& source, quint16 port) const

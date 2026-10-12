@@ -12,6 +12,9 @@
 #include <QProcess>
 #include <QUrlQuery>
 #include <QXmlStreamReader>
+#include <QSslSocket>
+#include <QSslKey>
+#include <QFile>
 #include <QtEndian>
 #include <cstdio>
 #include <stdexcept>
@@ -62,8 +65,12 @@ static void handshake(QAbstractSocket::NetworkLayerProtocol protocol)
     require(sender.bind(host, 0), "Could not bind handshake sender");
     const QByteArray token(32, 'a');
     PyroWaveUdp::ProbeHandshake hello(receiver, host, token, cancelled);
+    require(hello.timeoutDescription(0).contains("No valid HTTPS sender-port announcement"),
+            "Missing-header timeout phase was not identified");
     const auto header = QByteArray::number(sender.localPort());
     require(hello.start(header), "Handshake did not start");
+    require(hello.timeoutDescription(0).contains("No authenticated measured UDP packets") &&
+            hello.timeoutDescription(0).contains("tokens sent 1"), "Handshake timeout progress missing");
     require(sender.waitForReadyRead(1000), "No outbound handshake arrived");
     char data[64];
     QHostAddress source;
@@ -88,6 +95,7 @@ static void handshake(QAbstractSocket::NetworkLayerProtocol protocol)
     cancelled = true;
     PyroWaveUdp::ProbeHandshake stopped(receiver, host, token, cancelled);
     require(stopped.start(header) && !sender.waitForReadyRead(150), "Cancelled handshake sent a packet");
+    require(stopped.timeoutDescription(0).contains("tokens sent 0"), "Cancelled handshake counted a send");
     for (const QByteArray& invalid : {QByteArray(), QByteArray("0"), QByteArray("1023"),
              QByteArray("65536"), QByteArray("+4096"), QByteArray("4096 "), QByteArray("abcd")}) {
         PyroWaveUdp::ProbeHandshake bad(receiver, host, token, cancelled);
@@ -96,7 +104,28 @@ static void handshake(QAbstractSocket::NetworkLayerProtocol protocol)
     std::printf("%s UDP handshake, retry, source-port filtering and cancellation PASS\n", qPrintable(hostname));
 }
 
-static void progressiveHeaders()
+// Exercise native Qt TLS as well as TCP: the real probe exchanges progressive
+// HTTPS headers before its measured UDP traffic and final XML body.
+class HeaderServer : public QTcpServer {
+public:
+    bool tls = false;
+    void incomingConnection(qintptr descriptor) override
+    {
+        if (!tls) { QTcpServer::incomingConnection(descriptor); return; }
+        auto* socket = new QSslSocket(this);
+        QFile cert(QStringLiteral(FIXTURE_DIR "/loopback-cert.pem"));
+        QFile key(QStringLiteral(FIXTURE_DIR "/loopback-key.pem"));
+        require(cert.open(QIODevice::ReadOnly) && key.open(QIODevice::ReadOnly), "Missing TLS loopback fixture");
+        socket->setLocalCertificate(QSslCertificate(cert.readAll()));
+        socket->setPrivateKey(QSslKey(key.readAll(), QSsl::Rsa));
+        socket->setPeerVerifyMode(QSslSocket::VerifyNone);
+        require(socket->setSocketDescriptor(descriptor), "TLS fixture descriptor failed");
+        addPendingConnection(socket);
+        socket->startServerEncryption();
+    }
+};
+
+static void progressiveHeaders(bool tls, bool retainConnection)
 {
     std::atomic<bool> cancelled(false);
     QUdpSocket receiver, sender;
@@ -104,7 +133,8 @@ static void progressiveHeaders()
     require(sender.bind(host, 0), "Could not bind progressive sender");
     const QByteArray token(32, 'b');
     PyroWaveUdp::ProbeHandshake hello(receiver, host, token, cancelled);
-    QTcpServer server;
+    HeaderServer server;
+    server.tls = tls;
     require(server.listen(host, 0), "Could not open header fixture");
     QTcpSocket* connection = nullptr;
     bool announced = false;
@@ -126,12 +156,15 @@ static void progressiveHeaders()
         if (sender.readDatagram(bytes, sizeof(bytes), &source, &port) == token.size() &&
             QByteArray(bytes, token.size()) == token && port == receiver.localPort()) {
             confirmed = true;
-            connection->write("<root status_code=\"200\"/>");
-            connection->disconnectFromHost();
+            connection->write("<root status_code=\"200\"><expected>1</expected><sent>1</sent><elapsedMs>2000</elapsedMs></root>");
+            if (!retainConnection) connection->disconnectFromHost();
         }
     });
     QNetworkAccessManager network;
-    auto* reply = network.get(QNetworkRequest(QUrl(QString("http://127.0.0.1:%1/probe").arg(server.serverPort()))));
+    QObject::connect(&network, &QNetworkAccessManager::sslErrors, &network,
+                     [](QNetworkReply* reply, const QList<QSslError>&) { reply->ignoreSslErrors(); }); // Generated loopback certificate only.
+    auto* reply = network.get(QNetworkRequest(QUrl(QString("%1://127.0.0.1:%2/probe")
+        .arg(tls ? "https" : "http").arg(server.serverPort()))));
     bool headersBeforeBody = false;
     QEventLoop loop;
     QObject::connect(reply, &QNetworkReply::metaDataChanged, &loop, [&] {
@@ -139,20 +172,35 @@ static void progressiveHeaders()
         if (!hello.start(reply->rawHeader("X-PyroWave-Udp-Port"))) reply->abort();
     });
     QObject::connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
+    bool complete = false;
+    QObject::connect(reply, &QNetworkReply::readyRead, &loop, [&] {
+        complete = PyroWaveUdp::completeCloseDelimitedResponse(*reply);
+        if (retainConnection && complete) loop.quit();
+    });
     QTimer::singleShot(2000, &loop, &QEventLoop::quit);
     loop.exec();
-    require(headersBeforeBody && confirmed && reply->isFinished() && reply->error() == QNetworkReply::NoError &&
-            reply->readAll() == "<root status_code=\"200\"/>",
+    require(headersBeforeBody && confirmed && complete && (retainConnection || reply->isFinished()) &&
+            reply->error() == QNetworkReply::NoError,
             "HTTPS-style headers could not establish UDP before the final response body");
+    if (retainConnection) {
+        require(!reply->isFinished(), "Retained connection fixture unexpectedly reached EOF");
+        // daily183's openConnection only watched finished(): it would abort
+        // this complete, readable response at its request deadline.
+        require(reply->bytesAvailable() > 0, "daily183 timeout reproduction has no response body");
+    }
+    require(hello.timeoutDescription(1).contains("HTTPS result did not complete"), "Result timeout phase missing");
     hello.receivedPacket();
     delete reply;
-    std::puts("Progressive port headers precede UDP handshake and final body PASS");
+    std::printf("%s progressive headers + UDP + %s result PASS\n", tls ? "HTTPS" : "HTTP",
+                retainConnection ? "complete XML without EOF (daily183 failure reproduced)" : "EOF");
 }
 
 static void closeDelimitedResponse()
 {
     const QByteArray body("<root status_code=\"200\"><expected>819</expected><sent>819</sent><elapsedMs>2000</elapsedMs></root>");
-    for (int variant = 0; variant < 6; ++variant) {
+    for (int variant = 0; variant < 7; ++variant) {
+        const QByteArray responseBody = variant == 6 ?
+            QByteArray("<root status_code=\"500\" status_message=\"UDP handshake timed out\"/>") : body;
         QTcpServer server;
         require(server.listen(QHostAddress::LocalHost, 0), "Could not open close-delimited fixture");
         bool wrote = false;
@@ -166,10 +214,10 @@ static void closeDelimitedResponse()
                 headers += "Connection: close\r\nX-PyroWave-Udp-Port: 12345\r\n";
                 if (variant == 2) headers += "Content-Length: 1000\r\n";
                 if (variant == 3) headers += "Transfer-Encoding: chunked\r\n";
-                connection->write(headers + "\r\n" + (variant == 3 ? "100\r\n" : "") + body.left(40));
+                connection->write(headers + "\r\n" + (variant == 3 ? "100\r\n" : "") + responseBody.left(40));
                 // Deliberately keep the socket open after the final XML byte.
                 QTimer::singleShot(50, &server, [&, connection] {
-                    if (variant != 1) connection->write(body.mid(40) + (variant == 4 ? "junk" : ""));
+                    if (variant != 1) connection->write(responseBody.mid(40) + (variant == 4 ? "junk" : ""));
                 });
             });
         });
@@ -181,19 +229,19 @@ static void closeDelimitedResponse()
         QObject::connect(reply, &QNetworkReply::readyRead, &loop, [&] {
             if (PyroWaveUdp::completeCloseDelimitedResponse(*reply)) {
                 accepted = true;
-                acceptedPartial = reply->bytesAvailable() < body.size();
+                acceptedPartial = reply->bytesAvailable() < responseBody.size();
                 loop.quit();
             }
         });
         QTimer::singleShot(250, &loop, &QEventLoop::quit);
         loop.exec();
-        require(accepted == (variant == 0) && !acceptedPartial,
+        require(accepted == (variant == 0 || variant == 6) && !acceptedPartial,
                 "Close-delimited completion accepted a partial, invalid or explicitly framed response");
-        if (accepted) require(!reply->isFinished() && reply->readAll() == body,
+        if (accepted) require(!reply->isFinished() && reply->readAll() == responseBody,
                               "Completion consumed the response or waited for HTTP EOF");
         delete reply;
     }
-    std::puts("Complete close-delimited XML without EOF; partial/framed/invalid/error rejection PASS");
+    std::puts("Complete close-delimited success/host-error XML without EOF; partial/framed/invalid/HTTP-error rejection PASS");
 }
 
 static void hostFixture(const QString& executable)
@@ -327,7 +375,9 @@ int main(int argc, char** argv)
         delayedReader(QAbstractSocket::IPv6Protocol);
         handshake(QAbstractSocket::IPv4Protocol);
         handshake(QAbstractSocket::IPv6Protocol);
-        progressiveHeaders();
+        progressiveHeaders(false, false);
+        progressiveHeaders(true, false);
+        progressiveHeaders(true, true);
         closeDelimitedResponse();
         std::atomic<bool> cancelled(true);
         QUdpSocket stopped;

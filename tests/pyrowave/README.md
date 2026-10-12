@@ -20,6 +20,12 @@ the UDP token arrives. Close-delimited response fixtures deliberately retain the
 complete XML and verify early completion without consuming the body. Partial XML,
 trailing junk, HTTP errors, Content-Length and chunked framing reject the fallback.
 These loopback checks do not replace a live-host test through Windows Firewall.
+Native Qt HTTPS fixtures additionally exercise progressive headers, receiver-socket
+tokens and both normal EOF and complete XML on a retained connection. The latter
+reproduces daily183's wait-for-EOF failure and checks the daily184 compatibility
+path. Generated fixture certificates are exclusively for localhost tests; only
+that fixture disables peer verification. Timeout phase checks cover missing
+headers, handshake sends without measured packets, and a pending HTTPS result.
 The Mac delayed-reader cases hold packets for 160 ms before reading, check
 that kernel timestamps retain the original spacing, and verify Qt's next
 datagram notification still works for IPv4 and IPv6. The link-policy suite
