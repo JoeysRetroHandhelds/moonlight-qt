@@ -1689,6 +1689,9 @@ struct Metrics {
     Vrr13::ReadinessWindow simulatedReadiness;
     uint64_t feedbackCapacityLimitedFrames = 0;
     VrrTimingDecision lastFeedbackDecision;
+    Vrr13::InputPercentileBuffer::Stats simulatedInputPercentile;
+    double simulatedInputBufferSumUs = 0;
+    uint64_t simulatedInputBufferRows = 0;
 
     uint64_t delivered = 0;
     uint64_t preparedAheadFrames = 0;
@@ -5630,6 +5633,17 @@ QJsonObject summaryObject(const Metrics& metrics, qint64 elapsedMs,
     smoothnessFeedback["native_window_misses"] = double(feedback.nativeSmoothnessMisses);
     smoothnessFeedback["native_evidence"] = "recorded service latency shifted with candidate submissions; missing intervals are not successes";
     simulation["smoothness_feedback"] = smoothnessFeedback;
+    QJsonObject inputPercentile;
+    const auto& input = metrics.simulatedInputPercentile;
+    inputPercentile["eligible"] = double(input.eligible);
+    inputPercentile["missed"] = double(input.missed);
+    inputPercentile["missed_percent"] = input.eligible ? 100.0 * double(input.missed) / double(input.eligible) : 0.0;
+    inputPercentile["mean_buffer_us"] = metrics.simulatedInputBufferRows ?
+        metrics.simulatedInputBufferSumUs / double(metrics.simulatedInputBufferRows) : 0.0;
+    inputPercentile["final_buffer_us"] = double(input.currentUs);
+    inputPercentile["final_target_us"] = double(input.targetUs);
+    inputPercentile["scope"] = "candidate controller input-buffer coverage over the session; misses are frames whose readiness exceeded buffer plus tolerance and recovery credit";
+    simulation["input_percentile"] = inputPercentile;
     simulation["display_hz"] = simulatedDisplayHz;
     simulation["stream_fps"] = simulatedStreamFps;
     simulation["additional_queued_frame"] = additionalQueuedFrame;
@@ -15156,6 +15170,14 @@ int main(int argc, char* argv[])
             addReferenceControllerDiagnostics(
                 metrics, referenceController->diagnostics(), fields, columns);
             auditBufferUpdate();
+        }
+        {
+            const auto input = simulatedController->intervalStats().inputPercentile;
+            metrics.simulatedInputPercentile = input;
+            if (input.initialized) {
+                metrics.simulatedInputBufferSumUs += double(input.currentUs);
+                ++metrics.simulatedInputBufferRows;
+            }
         }
 
         if (optionalUnsignedField(fields, columns.presentEndUs) && !staleBeforeRenderLifecycle && !staleAfterRenderLifecycle) {

@@ -1,8 +1,22 @@
 Main input-accounting correction (2026-10-12): current bounded-catch-up sessions serialize
-`playout_input_clock_relative_history=1` and
+`playout_input_clock_relative_history=3` and
 `playout_input_bounded_recovery_credit=1`; absent fields keep historical captures
-exactly replayable. Retained input requirements share an immutable source-clock
-coordinate and are projected into the current mapping for demand. Historical
+exactly replayable, and values 1 and 2 replay earlier versions of the correction.
+Retained input requirements share a source-clock coordinate and are projected
+into the current mapping for demand. The coordinate is the applied playout
+offset minus host/client clock drift and stays continuous across a sender-clock
+reseed. Mode 3 estimates drift as the least-squares slope of the offset over the
+trailing 120 s (100 ms samples, refit each second, at least 15 s span). The
+applied offset is a windowed minimum: on the 2026-10-12 23:04 Deck session it
+held still on about 90% of frames and slewed in +/-20-27 us/frame bursts both
+ways, while its trend was +32 ppm. Mode 1 used the raw offset, so drift moved
+every retained requirement by drift x age. Mode 2 took the median of per-second
+slopes, which read zero on that session and behaved like mode 1. Replaying that
+capture with only this field changed (99.50% / 120 s profile): legacy 0.91%
+misses at 3.44 ms mean buffer, mode 1 2.63% at 2.54 ms, mode 2 2.60% at 2.54 ms
+(the live overlay showed about 97% coverage with a flat buffer), mode 3 0.56% at
+3.43 ms. `tst_inputaccounting` covers smooth drift (+/-50 ppm) and a bursty
+offset from sparse early arrivals (+/-30 ppm) against the legacy accounting. Historical
 coverage outcomes keep their original protection. Input recovery credit is
 bounded by the configured interval allowance as well as physical VRR room;
 PhaseTrajectory still uses physical room and its existing gradual repayment.

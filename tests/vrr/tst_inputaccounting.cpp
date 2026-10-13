@@ -2,6 +2,7 @@
 #include "../../app/streaming/video/timinggraph.h"
 #include <cstdio>
 #include <limits>
+#include <random>
 using Vrr13::InputPercentileBuffer;
 int fail=0;
 void check(bool b,const char* msg){if(!b){std::fprintf(stderr,"FAIL: %s\n",msg);++fail;}}
@@ -32,10 +33,49 @@ void rateRoundTrip() {
  check(slow.currentUs<=fast.currentUs+250,"slower rate invents no additional standing protection");
  check(back.holdRemainingUs==0,"rate transitions introduce no permanent HOLD");
 }
+struct DriftRun{double meanUs;uint64_t missed,eligible;};
+DriftRun driftRun(bool correct,double ppm,bool sparseEarly=false) {
+ VrrSessionConfig cfg;cfg.streamRateHz=116;cfg.displayRefreshHz=120;
+ cfg.experimentalInputPercentilePpm=1;cfg.experimentalBoundedCatchup=true;cfg.correctInputAccounting=correct;
+ cfg.smoothFrameTiming=false;cfg.timingOptions={4000,9995,300,500};
+ auto policy=vrrTimingParametersForSession(cfg);policy.playoutDelayStartSeedUs=1000;
+ VrrTimingController c(cfg,true,policy);double slot=1000000;uint64_t submitted=0;uint32_t pts=0;
+ std::mt19937_64 rng(42);std::gamma_distribution<double> jitter(2.0,400.0);std::uniform_real_distribution<double> spike(0,1);
+ double sum=0;uint64_t counted=0;
+ for(uint64_t frame=0;frame<42000;++frame) {
+  slot+=8600.0*(1+ppm*1e-6);pts+=774;
+  // Sparse early arrivals set the windowed offset minimum, so the applied
+  // offset holds and then slews in bursts instead of following drift smoothly.
+  const bool early=sparseEarly&&spike(rng)<0.01;
+  const uint64_t ready=early?uint64_t(slot)+300:
+   uint64_t(slot)+(sparseEarly?1800:800)+uint64_t(jitter(rng))+(spike(rng)<0.003?4000:0);
+  PacedFrame f(nullptr,int(frame),pts,true,ready);f.setDeliveryTimeline(ready-800,ready-600,ready-500);
+  const auto d=c.schedule(f,std::max(ready,submitted));
+  const uint64_t prepared=std::max(ready,d.renderStartUs)+500;
+  submitted=std::max(prepared,d.targetUs);c.notePreparationDuration(500,0,prepared);
+  c.noteSchedulerDelays(0,0,true);c.noteSubmission(true,false,submitted,submitted);
+  if(frame>=7000){sum+=c.intervalStats().inputPercentile.currentUs;++counted;}
+ }
+ const auto s=c.intervalStats().inputPercentile;return {sum/counted,s.missed,s.eligible};
+}
+void clockDrift() {
+ for(double ppm:{-50.0,50.0}) {
+  const auto legacy=driftRun(false,ppm),fixed=driftRun(true,ppm);
+  std::printf("clock drift %+.0f ppm: legacy %.0f us %llu/%llu misses, corrected %.0f us %llu/%llu misses\n",ppm,legacy.meanUs,(unsigned long long)legacy.missed,(unsigned long long)legacy.eligible,fixed.meanUs,(unsigned long long)fixed.missed,(unsigned long long)fixed.eligible);
+  check(fixed.meanUs<=legacy.meanUs*1.25,"host/client clock drift does not ratchet retained protection");
+  check(fixed.missed<=legacy.missed*2+10,"host/client clock drift does not erode retained protection");
+ }
+ for(double ppm:{-30.0,30.0}) {
+  const auto legacy=driftRun(false,ppm,true),fixed=driftRun(true,ppm,true);
+  std::printf("bursty offset %+.0f ppm: legacy %.0f us %llu/%llu misses, corrected %.0f us %llu/%llu misses\n",ppm,legacy.meanUs,(unsigned long long)legacy.missed,(unsigned long long)legacy.eligible,fixed.meanUs,(unsigned long long)fixed.missed,(unsigned long long)fixed.eligible);
+  check(fixed.meanUs<=legacy.meanUs*1.1,"drift under a bursty offset does not ratchet retained protection");
+  check(fixed.missed<=legacy.missed+legacy.missed/2+5,"drift under a bursty offset does not erode retained protection");
+ }
+}
 int main(){
  VrrSessionConfig cfg;cfg.streamRateHz=76;cfg.displayRefreshHz=120;cfg.latencyMode=0;cfg.experimentalInputPercentilePpm=1;cfg.experimentalBoundedCatchup=true;cfg.timingOptions={4000,9995,300,500};
  auto p=vrrTimingParametersForSession(cfg);VrrTimingController c(cfg,true,p);
- check(p.playoutInputClockRelativeHistory==1&&p.playoutInputBoundedRecoveryCredit==1,"current main enables corrected accounting");
+ check(p.playoutInputClockRelativeHistory==3&&p.playoutInputBoundedRecoveryCredit==1,"current main enables corrected accounting");
  check(c.recoveryHeadroomUs()>4800&&c.inputRecoveryCreditUs()==500,"large physical gap grants only configured recovery allowance");
  cfg.correctInputAccounting=false;auto old=vrrTimingParametersForSession(cfg);VrrTimingController legacy(cfg,true,old);check(legacy.inputRecoveryCreditUs()==legacy.recoveryHeadroomUs(),"diagnostic legacy control retains original credit");
  check(p.playoutInputPercentileTargetPerMillion==999500&&p.playoutInputPercentileWindowUs==300000000&&p.playoutInputPercentileToleranceUs==500,"active 99.95/300s/0.50ms profile preserved");
@@ -50,5 +90,6 @@ int main(){
  InputPercentileBuffer extremes;extremes.reset(1000);observe(extremes,1,std::numeric_limits<int64_t>::max()-5,100);check(extremes.stats().currentUs<=25000&&extremes.stats().clipped,"signed source-coordinate addition saturates at policy cap");extremes.advance(1020000,1000,25000,999500,300000000,1000,250,0,500,500,std::numeric_limits<int64_t>::min());check(extremes.stats().targetUs==25000,"signed projection saturates safely");
  Overlay::TimingGraphPoint g;g.sourceTimingValid=true;g.sourceTimeUs=100000;g.bufferUs=1000;g.inputPercentileEnabled=true;g.producerEligible=true;g.inputToleranceUs=500;g.inputVrrHeadroomUs=500;g.producerRequiredUs=-1000;auto graph=Overlay::bufferGraphSample(g);check(graph.producerUs==-1500&&!graph.producerMissed()&&graph.bufferUs==1000,"signed graph readiness remains separate from standing buffer");
  rateRoundTrip();
+ clockDrift();
  std::printf("main input accounting: %d failures\n",fail);return fail?1:0;
 }

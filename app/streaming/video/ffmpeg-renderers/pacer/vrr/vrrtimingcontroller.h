@@ -33,6 +33,8 @@
     X(uint64_t, bounded_catchup_enabled, boundedCatchupEnabled, 0) \
     X(uint64_t, normalized_source_mapping, normalizedSourceMapping, 0) \
     /* Zero preserves historical capture accounting. */ \
+    /* 1 = raw applied offset; 2 = minus median per-second drift; */ \
+    /* 3 = minus least-squares drift over the trailing 120 s. */ \
     X(uint64_t, playout_input_clock_relative_history, playoutInputClockRelativeHistory, 0) \
     X(uint64_t, playout_input_bounded_recovery_credit, playoutInputBoundedRecoveryCredit, 0) \
     X(uint64_t, playout_input_percentile_enabled, playoutInputPercentileEnabled, 0) \
@@ -599,6 +601,8 @@ private:
 
     bool timestampPlayoutEnabled() const;
     void resetPlayoutOffsets();
+    int64_t inputClockOffsetUs(uint64_t nowUs);
+    void updateInputDriftFit(uint64_t nowUs);
     int64_t observePlayoutOffset(uint64_t observationUs, int64_t offsetUs,
                                  bool cadenceEligible = true,
                                  bool phaseDiscontinuity = false);
@@ -757,6 +761,25 @@ private:
     uint64_t m_LastPlayoutOffsetObservationUs = 0;
     uint64_t m_PlayoutOffsetSlewRemainder = 0;
     bool m_TimestampPlayoutActive = false;
+    // Input history coordinate: applied offset movement minus the drift rate
+    // (median of per-second offset slopes), continuous across reseeds.
+    uint64_t m_PlayoutOffsetEpoch = 0;
+    bool m_InputClockValid = false;
+    uint64_t m_InputClockEpoch = 0;
+    int64_t m_InputClockLastOffsetUs = 0;
+    uint64_t m_InputClockLastUs = 0;
+    int64_t m_InputClockCoordinateUs = 0;
+    int64_t m_InputClockRawUs = 0;
+    int64_t m_InputClockDriftRemainder = 0;
+    uint64_t m_InputDriftAnchorUs = 0;
+    int64_t m_InputDriftAnchorRawUs = 0;
+    std::array<int64_t, 61> m_InputDriftSlopesPpb{};
+    size_t m_InputDriftSlopeCount = 0;
+    size_t m_InputDriftSlopeIndex = 0;
+    struct InputDriftPoint { uint64_t atUs; int64_t rawUs; };
+    std::deque<InputDriftPoint> m_InputDriftPoints;
+    uint64_t m_InputDriftLastFitUs = 0;
+    int64_t m_InputDriftFitPpb = 0;
     std::map<unsigned int, PlayoutBand> m_PlayoutBands;
     Vrr13::Reserve m_PlayoutHistory;
     Vrr13::WorkloadEpisode m_WorkloadEpisode;
