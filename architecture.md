@@ -12,6 +12,15 @@ overlay keeps host smoothness and two plan-referenced VRR lines, with decoder
 skips and detailed tracing confined to logs. Historical task-4 notes below
 describe earlier candidates, not the final integrated overlay.
 
+Client VRR buffer warnings now require 20 continuous seconds at the applied
+buffer cap. Display also requires qualified quality at or below 99% and recent
+late/drop evidence. The overlay appears for up to five seconds and can recur only after
+20 minutes in the same stream session. Decoder recreation clears the visible
+overlay and observation streak while retaining the session cooldown. The
+Settings checkbox "Hide VRR buffer limit warnings" defaults to unchecked and
+suppresses this client pacing alert when selected; the general connection
+warning setting still gates it as before.
+
 ### Historical task-4 readability candidate (2026-10-11 UTC) copied from the
 currently selected build-claude-app source, preserving its measured/estimated
 GPU decode completion, free VRR headroom credit and no-skip bounded trajectory.

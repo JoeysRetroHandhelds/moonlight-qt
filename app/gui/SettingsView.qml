@@ -2351,6 +2351,17 @@ Flickable {
                 }
 
                 CheckBox {
+                    id: hideVrrBufferWarningsCheck
+                    width: parent.width
+                    text: qsTr("Hide VRR buffer limit warnings")
+                    font.pointSize: 12
+                    checked: StreamingPreferences.hideVrrBufferWarnings
+                    onCheckedChanged: {
+                        StreamingPreferences.hideVrrBufferWarnings = checked
+                    }
+                }
+
+                CheckBox {
                     id: configurationWarningsCheck
                     width: parent.width
                     text: qsTr("Show configuration warnings")

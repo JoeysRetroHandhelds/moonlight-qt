@@ -620,44 +620,52 @@ int main(int argc, char** argv)
     {
         using Reason = ClientPacingWarning::Reason;
         ClientPacingWarning warning;
-        for (uint64_t t = 1; t <= 6; ++t)
-            assert(warning.observe(t * 1000000, true, true, true, false, false, 98.0) == Reason::None);
-        assert(warning.observe(7000000, true, true, true, false, true, 98.0) == Reason::None);
-        assert(warning.observe(8000000, true, true, true, false, true, 98.0) == Reason::None);
-        assert(warning.observe(9000000, true, true, true, false, true, 98.0) == Reason::BufferLimit);
-        for (uint64_t t = 10; t <= 14; ++t)
-            assert(warning.observe(t * 1000000, true, true, true, false, false, 98.0) == Reason::BufferLimit);
-        assert(warning.observe(15000000, true, true, false, false, false, 98.0) == Reason::None);
-        for (uint64_t t = 16; t <= 20; ++t)
+        for (uint64_t t = 1; t <= 19; ++t)
             assert(warning.observe(t * 1000000, true, true, true, false, true, 98.0) == Reason::None);
-        // A suspend/reconnect resets startup qualification and old warnings.
-        assert(warning.observe(40000000, true, true, true, false, true, 98.0) == Reason::None);
-        assert(warning.observe(41000000, true, false, true, false, true, 98.0) == Reason::None);
-        assert(warning.observe(42000000, true, true, true, true, true, 98.0) == Reason::None);
-        assert(warning.observe(43000000, true, true, true, true, true, 98.0) == Reason::None);
-        assert(warning.observe(44000000, true, true, true, true, true, 98.0) == Reason::ProcessingOverload);
-        assert(warning.observe(45000000, false, true, true, true, true, 98.0) == Reason::None);
+        assert(warning.observe(20000000, true, true, false, false, true, 98.0) == Reason::None);
+        for (uint64_t t = 21; t <= 40; ++t)
+            assert(warning.observe(t * 1000000, true, true, true, false, true, 98.0) == Reason::None);
+        assert(warning.observe(41000000, true, true, true, false, true, 98.0) == Reason::BufferLimit);
+        for (uint64_t t = 42; t <= 45; ++t)
+            assert(warning.observe(t * 1000000, true, true, true, false, true, 98.0) == Reason::BufferLimit);
+        assert(warning.observe(46000000, true, true, true, false, true, 98.0) == Reason::None);
+        // A reporting gap and a fresh 20-second streak cannot bypass the session cooldown.
+        assert(warning.observe(50000000, true, true, true, false, true, 98.0) == Reason::None);
+        for (uint64_t t = 51; t <= 72; ++t)
+            assert(warning.observe(t * 1000000, true, true, true, true, true, 98.0) == Reason::None);
+        // The warning becomes eligible again after 20 minutes of session time.
+        assert(warning.observe(1240000000, true, true, true, true, true, 98.0) == Reason::None);
+        for (uint64_t t = 1241; t < 1260; ++t)
+            assert(warning.observe(t * 1000000, true, true, true, true, true, 98.0) == Reason::None);
+        assert(warning.observe(1260000000, true, true, true, true, true, 98.0) == Reason::ProcessingOverload);
+        assert(warning.observe(1261000000, false, true, true, true, true, 98.0) == Reason::None);
         for (const double quality : {99.01, 99.5, 100.0}) {
             ClientPacingWarning healthy;
             for (uint64_t t = 1; t <= 12; ++t)
                 assert(healthy.observe(t * 1000000, true, true, true, true, true, quality) == Reason::None);
         }
+        ClientPacingWarning recovering;
+        for (uint64_t t = 1; t <= 19; ++t)
+            assert(recovering.observe(t * 1000000, true, true, true, false, true, 100.0) == Reason::None);
+        assert(recovering.observe(20000000, true, true, true, false, true, 99.0) == Reason::None);
+        assert(recovering.observe(21000000, true, true, true, false, true, 99.0) == Reason::None);
+        assert(recovering.observe(22000000, true, true, true, false, true, 99.0) == Reason::BufferLimit);
         for (const bool overloaded : {false, true}) {
             ClientPacingWarning threshold;
-            for (uint64_t t = 1; t <= 4; ++t)
+            for (uint64_t t = 1; t <= 20; ++t)
                 threshold.observe(t * 1000000, true, true, true, overloaded, true, 99.0);
-            assert(threshold.observe(5000000, true, true, true, overloaded, true, 99.0) != Reason::None);
-            assert(threshold.observe(6000000, true, true, true, overloaded, true, 99.01) == Reason::None);
-            assert(threshold.observe(7000000, true, true, true, overloaded, true, 99.0) == Reason::None);
+            assert(threshold.observe(21000000, true, true, true, overloaded, true, 99.0) != Reason::None);
+            assert(threshold.observe(22000000, true, true, true, overloaded, true, 99.01) == Reason::None);
+            assert(threshold.observe(23000000, true, true, true, overloaded, true, 99.0) == Reason::None);
         }
         // Even sustained processing overload must not warn below the cap.
         ClientPacingWarning belowCap;
         for (uint64_t t = 1; t <= 12; ++t)
             assert(belowCap.observe(t * 1000000, true, true, false, true, true, 95.0) == Reason::None);
-        for (uint64_t t = 13; t <= 15; ++t)
+        for (uint64_t t = 13; t <= 32; ++t)
             belowCap.observe(t * 1000000, true, true, true, true, true, 99.0);
-        assert(belowCap.observe(16000000, true, true, true, true, true, 99.0) == Reason::ProcessingOverload);
-        assert(belowCap.observe(17000000, true, true, false, true, true, 95.0) == Reason::None);
+        assert(belowCap.observe(33000000, true, true, true, true, true, 99.0) == Reason::ProcessingOverload);
+        assert(belowCap.observe(34000000, true, true, false, true, true, 95.0) == Reason::None);
         const auto limited = ClientPacingWarning::message(Reason::BufferLimit, true, true, false);
         assert(limited.find("HEVC") != std::string::npos && limited.find("Try Smooth") != std::string::npos);
         assert(limited.find("network") == std::string::npos);

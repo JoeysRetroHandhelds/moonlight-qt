@@ -181,6 +181,7 @@ public:
     Q_PROPERTY(bool absoluteTouchMode MEMBER absoluteTouchMode NOTIFY absoluteTouchModeChanged)
     Q_PROPERTY(bool framePacing MEMBER framePacing NOTIFY framePacingChanged)
     Q_PROPERTY(bool connectionWarnings MEMBER connectionWarnings NOTIFY connectionWarningsChanged)
+    Q_PROPERTY(bool hideVrrBufferWarnings MEMBER hideVrrBufferWarnings NOTIFY hideVrrBufferWarningsChanged)
     Q_PROPERTY(bool configurationWarnings MEMBER configurationWarnings NOTIFY configurationWarningsChanged)
     Q_PROPERTY(bool richPresence MEMBER richPresence NOTIFY richPresenceChanged)
     Q_PROPERTY(bool gamepadMouse MEMBER gamepadMouse NOTIFY gamepadMouseChanged)
@@ -239,6 +240,7 @@ public:
     bool absoluteTouchMode;
     bool framePacing;
     bool connectionWarnings;
+    bool hideVrrBufferWarnings;
     bool configurationWarnings;
     bool richPresence;
     bool gamepadMouse;
@@ -298,6 +300,7 @@ signals:
     void windowModeChanged();
     void framePacingChanged();
     void connectionWarningsChanged();
+    void hideVrrBufferWarningsChanged();
     void configurationWarningsChanged();
     void richPresenceChanged();
     void gamepadMouseChanged();

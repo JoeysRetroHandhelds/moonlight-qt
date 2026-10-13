@@ -9,15 +9,26 @@ class ClientPacingWarning {
 public:
     enum class Reason { None, BufferLimit, ProcessingOverload };
 
+    void resetObservation()
+    {
+        m_Started = m_Last = m_CapSince = m_BadSince = m_CleanSince = 0;
+        m_Candidate = m_Visible = Reason::None;
+    }
+
     Reason observe(uint64_t nowUs, bool active, bool qualified, bool atLimit,
                    bool overloaded, bool freshLateOrDrop, double qualityPercent)
     {
         if (!active || (m_Last && (nowUs <= m_Last || nowUs - m_Last > 2500000))) {
-            *this = {};
+            resetObservation();
         }
         m_Last = nowUs;
         if (!active) return Reason::None;
         if (!m_Started) m_Started = nowUs;
+        // Track the continuous cap streak independently of the current quality
+        // score. A healthy interval hides the alert, but does not erase time
+        // already spent at the limit.
+        if (!qualified || !atLimit) m_CapSince = 0;
+        else if (!m_CapSince) m_CapSince = nowUs;
         // Both conditions are required for either warning: a maxed-out buffer
         // and measured smoothness at or below 99%. Unknown/NaN scores cannot
         // authorize a warning. Hide immediately when either condition clears.
@@ -35,8 +46,9 @@ public:
                 m_Candidate = candidate;
                 m_BadSince = nowUs;
             }
-            if (nowUs - m_Started >= 3000000 && nowUs - m_BadSince >= 2000000 &&
-                    (m_Visible != Reason::None || !m_LastShown || nowUs - m_LastShown >= 30000000)) {
+            if (nowUs - m_Started >= 3000000 && nowUs - m_CapSince >= 20000000 &&
+                    nowUs - m_BadSince >= 2000000 &&
+                    (!m_LastShown || nowUs - m_LastShown >= 1200000000)) {
                 if (m_Visible == Reason::None) m_LastShown = nowUs;
                 m_Visible = candidate;
             }
@@ -47,6 +59,8 @@ public:
             if (!m_CleanSince) m_CleanSince = nowUs;
             if (nowUs - m_CleanSince >= 5000000) m_Visible = Reason::None;
         }
+        if (m_LastShown && nowUs - m_LastShown >= 5000000)
+            m_Visible = Reason::None;
         return m_Visible;
     }
 
@@ -64,6 +78,7 @@ public:
     }
 
 private:
-    uint64_t m_Started = 0, m_Last = 0, m_BadSince = 0, m_CleanSince = 0, m_LastShown = 0;
+    uint64_t m_Started = 0, m_Last = 0, m_CapSince = 0, m_BadSince = 0,
+             m_CleanSince = 0, m_LastShown = 0;
     Reason m_Candidate = Reason::None, m_Visible = Reason::None;
 };

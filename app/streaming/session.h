@@ -10,6 +10,7 @@
 #include "video/decoder.h"
 #include "audio/renderers/renderer.h"
 #include "video/overlaymanager.h"
+#include "video/clientpacingwarning.h"
 #include "diagnostics/diagnosticcapture.h"
 
 class SupportedVideoFormatList : public QList<int>
@@ -126,7 +127,8 @@ public:
         return m_OverlayManager;
     }
 
-    bool clientPacingWarningsEnabled() const { return m_Preferences->connectionWarnings; }
+    bool clientPacingWarningsEnabled() const { return m_Preferences->connectionWarnings && !m_Preferences->hideVrrBufferWarnings; }
+    ClientPacingWarning& clientPacingWarning() { return m_ClientPacingWarning; }
     bool hevcPacingAlternative() const { return m_HevcPacingAlternative; }
 
     int streamColorRange() const
@@ -281,6 +283,7 @@ private:
     };
 
     StreamingPreferences* m_Preferences;
+    ClientPacingWarning m_ClientPacingWarning;
     PresentationSettings m_PresentationSettings;
     std::unique_ptr<DiagnosticCapture> m_DiagnosticCapture;
     bool m_IsFullScreen;

@@ -369,9 +369,9 @@ void FFmpegVideoDecoder::reset()
         m_LastPacerTelemetry = {};
     }
 
-    m_ClientPacingWarning = {};
     m_PyroWavePacketLossWarning = {};
     if (Session::get() && !m_TestOnly) {
+        Session::get()->clientPacingWarning().resetObservation();
         Session::get()->getOverlayManager().setStatusMessage(Overlay::StatusSource::ClientPacing, "");
         Session::get()->getOverlayManager().setStatusMessage(Overlay::StatusSource::PacketLoss, "");
     }
@@ -1199,7 +1199,7 @@ void FFmpegVideoDecoder::syncPacerTelemetry()
     }
 
     const auto& interval = snapshot.vrrReadiness.interval;
-    const auto warning = m_ClientPacingWarning.observe(LiGetMicroseconds(),
+    const auto warning = Session::get()->clientPacingWarning().observe(LiGetMicroseconds(),
         snapshot.vrrActive && Session::get()->clientPacingWarningsEnabled(),
         interval.initialCalibrationComplete && interval.evaluatedUs != 0,
         snapshot.vrrBufferCapUs != 0 && snapshot.vrrAppliedBufferUs >= snapshot.vrrBufferCapUs,
