@@ -365,6 +365,7 @@ bool validateVrrTimingParameters(const VrrTimingParameters& value,
             value.playoutAbsorbedJitterRelease > 1 ||
             value.playoutInputPercentileEnabled > 1 ||
             value.playoutInputBoundedRecoveryCredit > 1 ||
+            value.playoutInputRateDropSnap > 1 ||
             value.playoutGpuReadinessAdaptation > 1) {
         return fail("prediction-only, display event requirement, native hitch adaptation, readiness adaptation, stable smoothness reference, learned preparation lead, observed-period cap, capacity telemetry, absorbed jitter release, and GPU readiness flags must be 0 or 1");
     }

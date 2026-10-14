@@ -146,6 +146,16 @@ public:
         ++m_Stats.raises;
         m_ReleaseFraction = 0;
     }
+    // An abrupt source-rate drop changes every frame interval at once, so a
+    // step to the evidence-backed target is masked by the cadence change.
+    // Take it then instead of slewing at the rise and fall rates.
+    void followTarget() {
+        if (!m_Stats.initialized || m_Stats.targetUs == m_Stats.currentUs) return;
+        if (m_Stats.targetUs > m_Stats.currentUs) ++m_Stats.raises;
+        else ++m_Stats.lowers;
+        m_Stats.currentUs = m_Stats.targetUs;
+        m_ReleaseFraction = 0;
+    }
     uint64_t demand(uint64_t applied) const {
         return m_Stats.initialized ? m_Stats.currentUs : applied;
     }

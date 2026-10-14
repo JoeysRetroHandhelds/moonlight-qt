@@ -209,6 +209,7 @@ VrrTimingParameters vrrTimingParametersForSession(
     if (parameters.playoutInputPercentileEnabled) {
         parameters.playoutInputClockRelativeHistory = config.correctInputAccounting && config.experimentalBoundedCatchup ? 3 : 0;
         parameters.playoutInputBoundedRecoveryCredit = config.correctInputAccounting && config.experimentalBoundedCatchup;
+        parameters.playoutInputRateDropSnap = config.correctInputAccounting && config.experimentalBoundedCatchup;
         parameters.playoutInputPercentileTargetPerMillion = uint64_t(options.targetHundredths) * 100;
         // Explicit zero default preserves strict input coverage in old traces.
         parameters.playoutInputPercentileToleranceUs = options.toleranceUs;
@@ -524,6 +525,8 @@ void VrrTimingController::clearTimeline(bool retainLearnedBudgets)
         m_InputLayers.clear();
         m_InputLayerPeriodUs = 0;
         m_InputLayerEligibleAtStart = 0;
+        m_InputSettledLayerPeriodUs = 0;
+        m_InputRateDropAtUs = 0;
         m_PresentTiming.reset();
         m_SubmissionCadence.reset();
         m_DisplayCadence.reset();
@@ -3012,6 +3015,7 @@ void VrrTimingController::resetPlayoutOffsets()
     m_LastPlayoutOffsetObservationUs = 0;
     m_PlayoutOffsetSlewRemainder = 0;
     m_TimestampPlayoutActive = false;
+    m_PlayoutOffsetConverging = false;
     ++m_PlayoutOffsetEpoch;
 }
 
@@ -3252,6 +3256,7 @@ int64_t VrrTimingController::observePlayoutOffset(uint64_t observationUs,
                       m_AppliedPlayoutOffsetUs == windowMinimumUs)) {
         m_PlayoutOffsetSlewRemainder = 0;
     }
+    m_PlayoutOffsetConverging = m_AppliedPlayoutOffsetUs != windowMinimumUs;
     return m_AppliedPlayoutOffsetUs;
 }
 
@@ -3316,6 +3321,7 @@ VrrTimingController::InputLayerChange VrrTimingController::updateInputLayer(uint
     const bool settled = m_InputPercentileBuffer.stats().eligible >=
         m_InputLayerEligibleAtStart + kInputLayerMinimumFrames;
     if (settled) {
+        m_InputSettledLayerPeriodUs = m_InputLayerPeriodUs;
         if (m_InputLayers.size() >= kInputLayersStored) {
             m_InputLayers.erase(std::min_element(m_InputLayers.begin(), m_InputLayers.end(),
                 [](const InputLayer& a, const InputLayer& b) {
@@ -3806,6 +3812,15 @@ void VrrTimingController::updatePlayoutHistory(
                 // headroom is restored up to the evidence-backed target.
                 uint64_t lostHeadroomUs = 0;
                 const auto layerChange = updateInputLayer(nowUs);
+                if (m_Parameters.playoutInputRateDropSnap && layerChange != InputLayerChange::None) {
+                    // A period at least a quarter longer than the last settled
+                    // layer: 116 to 60 or 30 FPS, or 60 to 30 FPS. The fitted
+                    // period ramps through short-lived layers on the way, so
+                    // each of them re-arms; any other change ends the window.
+                    const bool drop = m_InputSettledLayerPeriodUs &&
+                        m_SourcePeriodUs * 4 >= m_InputSettledLayerPeriodUs * 5;
+                    m_InputRateDropAtUs = drop ? nowUs : 0;
+                }
                 if (layerChange == InputLayerChange::Created ||
                         (layerChange == InputLayerChange::None && cadence.sourceRateChanged)) {
                     if (vrrHeadroomUs > m_InputHeadroomUs)
@@ -3823,6 +3838,21 @@ void VrrTimingController::updatePlayoutHistory(
                     m_ReadinessBudgetUs, m_Parameters.playoutInputPercentileToleranceUs,
                     vrrHeadroomUs, inputClockOffsetUs(nowUs));
                 m_InputPercentileBuffer.raiseForHeadroomLoss(lostHeadroomUs);
+                if (m_InputRateDropAtUs) {
+                    // After a drop the mapping often moves several ms over
+                    // seconds at the offset slew rate, and the source-relative
+                    // target moves the opposite way. Follow the target exactly
+                    // while that settles (at least 1 s, at most 10 s), so the
+                    // mapping plus buffer stays where the evidence needs it
+                    // instead of carrying the excess for tens of seconds.
+                    constexpr uint64_t kRateDropSnapMinimumUs = 1000000;
+                    constexpr uint64_t kRateDropSnapMaximumUs = 10000000;
+                    const uint64_t sinceUs = nowUs > m_InputRateDropAtUs ? nowUs - m_InputRateDropAtUs : 0;
+                    if (sinceUs < kRateDropSnapMaximumUs &&
+                            (sinceUs < kRateDropSnapMinimumUs || m_PlayoutOffsetConverging))
+                        m_InputPercentileBuffer.followTarget();
+                    else m_InputRateDropAtUs = 0;
+                }
                 const uint64_t demand = m_InputPercentileBuffer.demand(m_AppliedPlayoutDelayUs);
                 m_UnclampedRequestedPlayoutDelayUs = m_InputPercentileBuffer.stats().clipped ?
                     m_InputPercentileBuffer.stats().headroomTargetUnclippedUs : demand;

@@ -16,7 +16,25 @@ capture with only this field changed (99.50% / 120 s profile): legacy 0.91%
 misses at 3.44 ms mean buffer, mode 1 2.63% at 2.54 ms, mode 2 2.60% at 2.54 ms
 (the live overlay showed about 97% coverage with a flat buffer), mode 3 0.56% at
 3.43 ms. `tst_inputaccounting` covers smooth drift (+/-50 ppm) and a bursty
-offset from sparse early arrivals (+/-30 ppm) against the legacy accounting. Historical
+offset from sparse early arrivals (+/-30 ppm) against the legacy accounting.
+
+Rate-drop follow (2026-10-12, `playout_input_rate_drop_snap=1` in current
+sessions, absent in older captures): when the input layer switches to a period
+at least a quarter longer than the last settled layer (116 to 60 or 30 FPS, 60 to
+30 FPS), the input buffer takes its target directly, in both directions, for at
+least 1 s and while the applied playout offset is still slewing toward its
+window minimum, at most 10 s. The fitted period ramps through short-lived layers
+during a drop, so each re-arms against the settled one; any other layer change
+ends the window. The step coincides with the cadence change. On the 23:04
+session the offset rose 9.3 ms over 4 s after a 105-to-30 FPS drop while the
+source-relative target fell by the same amount; draining at 250 us/s carried
+offset plus buffer from 8.8 to 17.3 ms for about 25 s. Replay of that session
+(mode 3 accounting): offset plus buffer stays at the evidence level (about
+10.3 ms), decode-to-submission mean over the next 15 s falls from 9.66 to
+6.04 ms, and the whole session moves from 0.563% misses / 3.43 ms mean buffer
+to 0.583% / 3.34 ms with presented jerk p99 3.42 to 3.44 ms. In the first 5 s
+after the session's 110-to-30 FPS drop, jerk p95 rose from 16.2 to 17.7 ms.
+Historical
 coverage outcomes keep their original protection. Input recovery credit is
 bounded by the configured interval allowance as well as physical VRR room;
 PhaseTrajectory still uses physical room and its existing gradual repayment.

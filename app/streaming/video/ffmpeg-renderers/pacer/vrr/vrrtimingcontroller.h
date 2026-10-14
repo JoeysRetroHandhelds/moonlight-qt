@@ -37,6 +37,7 @@
     /* 3 = minus least-squares drift over the trailing 120 s. */ \
     X(uint64_t, playout_input_clock_relative_history, playoutInputClockRelativeHistory, 0) \
     X(uint64_t, playout_input_bounded_recovery_credit, playoutInputBoundedRecoveryCredit, 0) \
+    X(uint64_t, playout_input_rate_drop_snap, playoutInputRateDropSnap, 0) \
     X(uint64_t, playout_input_percentile_enabled, playoutInputPercentileEnabled, 0) \
     X(uint64_t, playout_input_percentile_target_per_million, playoutInputPercentileTargetPerMillion, 990000) \
     X(uint64_t, playout_input_percentile_window_us, playoutInputPercentileWindowUs, 60000000) \
@@ -761,8 +762,14 @@ private:
     uint64_t m_LastPlayoutOffsetObservationUs = 0;
     uint64_t m_PlayoutOffsetSlewRemainder = 0;
     bool m_TimestampPlayoutActive = false;
+    // The applied offset is still slewing toward its window minimum.
+    bool m_PlayoutOffsetConverging = false;
+    // Decision time of the last abrupt source-rate drop, zero when none is open,
+    // and the anchor period of the last layer that settled before it.
+    uint64_t m_InputRateDropAtUs = 0;
+    uint64_t m_InputSettledLayerPeriodUs = 0;
     // Input history coordinate: applied offset movement minus the drift rate
-    // (median of per-second offset slopes), continuous across reseeds.
+    // (trailing least-squares slope in mode 3), continuous across reseeds.
     uint64_t m_PlayoutOffsetEpoch = 0;
     bool m_InputClockValid = false;
     uint64_t m_InputClockEpoch = 0;

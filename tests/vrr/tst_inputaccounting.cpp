@@ -72,10 +72,48 @@ void clockDrift() {
   check(fixed.missed<=legacy.missed+legacy.missed/2+5,"drift under a bursty offset does not erode retained protection");
  }
 }
+struct DropRun{double latencyUs;uint64_t missed,eligible;};
+// 116 FPS where one frame in ten arrives 8 ms before the rest, so the mapping
+// minimum sits below the typical frame and the buffer covers the gap. The
+// source then drops abruptly to 30 FPS without early frames: the mapping slews
+// 8 ms later over seconds and the evidence needs 8 ms less buffer.
+DropRun rateDropRun(bool follow) {
+ VrrSessionConfig cfg;cfg.streamRateHz=116;cfg.displayRefreshHz=120;
+ cfg.experimentalInputPercentilePpm=1;cfg.experimentalBoundedCatchup=true;
+ cfg.smoothFrameTiming=false;cfg.timingOptions={4000,9995,300,500};
+ auto policy=vrrTimingParametersForSession(cfg);policy.playoutDelayStartSeedUs=1000;
+ policy.playoutInputRateDropSnap=follow;
+ VrrTimingController c(cfg,true,policy);uint64_t slot=1000000,submitted=0,frame=0;uint32_t pts=0;
+ std::mt19937_64 rng(7);std::uniform_int_distribution<uint64_t> jitter(0,600);
+ double latency=0;uint64_t counted=0;
+ const auto feed=[&](uint64_t count,uint64_t period,uint32_t ticks,bool earlyFrames,bool measure) {
+  for(uint64_t n=0;n<count;++n,++frame) {
+   slot+=period;pts+=ticks;
+   const uint64_t ready=slot+(earlyFrames&&frame%10==0?1000:9000)+jitter(rng);
+   PacedFrame f(nullptr,int(frame),pts,true,ready);f.setDeliveryTimeline(ready-800,ready-600,ready-500);
+   const auto d=c.schedule(f,std::max(ready,submitted));
+   const uint64_t prepared=std::max(ready,d.renderStartUs)+500;
+   submitted=std::max(prepared,d.targetUs);c.notePreparationDuration(500,0,prepared);
+   c.noteSchedulerDelays(0,0,true);c.noteSubmission(true,false,submitted,submitted);
+   if(measure){latency+=double(submitted-ready);++counted;}
+  }
+ };
+ feed(3000,8621,776,true,false);
+ const auto before=c.intervalStats().inputPercentile;
+ feed(450,33333,3000,false,true);
+ const auto after=c.intervalStats().inputPercentile;
+ return {latency/counted,after.missed-before.missed,after.eligible-before.eligible};
+}
+void rateDropFollow() {
+ const auto drain=rateDropRun(false),follow=rateDropRun(true);
+ std::printf("116->30 drop, first 15 s: drain %.0f us ready-to-present %llu/%llu misses, follow %.0f us %llu/%llu misses\n",drain.latencyUs,(unsigned long long)drain.missed,(unsigned long long)drain.eligible,follow.latencyUs,(unsigned long long)follow.missed,(unsigned long long)follow.eligible);
+ check(follow.latencyUs+3000<=drain.latencyUs,"an abrupt rate drop gives back the mapping's movement at once");
+ check(follow.missed<=drain.missed+2,"following the target through a rate drop keeps coverage");
+}
 int main(){
  VrrSessionConfig cfg;cfg.streamRateHz=76;cfg.displayRefreshHz=120;cfg.latencyMode=0;cfg.experimentalInputPercentilePpm=1;cfg.experimentalBoundedCatchup=true;cfg.timingOptions={4000,9995,300,500};
  auto p=vrrTimingParametersForSession(cfg);VrrTimingController c(cfg,true,p);
- check(p.playoutInputClockRelativeHistory==3&&p.playoutInputBoundedRecoveryCredit==1,"current main enables corrected accounting");
+ check(p.playoutInputClockRelativeHistory==3&&p.playoutInputBoundedRecoveryCredit==1&&p.playoutInputRateDropSnap==1,"current main enables corrected accounting");
  check(c.recoveryHeadroomUs()>4800&&c.inputRecoveryCreditUs()==500,"large physical gap grants only configured recovery allowance");
  cfg.correctInputAccounting=false;auto old=vrrTimingParametersForSession(cfg);VrrTimingController legacy(cfg,true,old);check(legacy.inputRecoveryCreditUs()==legacy.recoveryHeadroomUs(),"diagnostic legacy control retains original credit");
  check(p.playoutInputPercentileTargetPerMillion==999500&&p.playoutInputPercentileWindowUs==300000000&&p.playoutInputPercentileToleranceUs==500,"active 99.95/300s/0.50ms profile preserved");
@@ -91,5 +129,6 @@ int main(){
  Overlay::TimingGraphPoint g;g.sourceTimingValid=true;g.sourceTimeUs=100000;g.bufferUs=1000;g.inputPercentileEnabled=true;g.producerEligible=true;g.inputToleranceUs=500;g.inputVrrHeadroomUs=500;g.producerRequiredUs=-1000;auto graph=Overlay::bufferGraphSample(g);check(graph.producerUs==-1500&&!graph.producerMissed()&&graph.bufferUs==1000,"signed graph readiness remains separate from standing buffer");
  rateRoundTrip();
  clockDrift();
+ rateDropFollow();
  std::printf("main input accounting: %d failures\n",fail);return fail?1:0;
 }
