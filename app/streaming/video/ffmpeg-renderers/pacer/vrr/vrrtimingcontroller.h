@@ -137,7 +137,8 @@
     X(uint64_t, playout_smoothing_period_alpha_per_mille, playoutSmoothingPeriodAlphaPerMille, 50) \
     X(uint64_t, playout_smoothing_max_lag_us, playoutSmoothingMaxLagUs, 8000) \
     X(uint64_t, playout_smoothing_snap_per_mille, playoutSmoothingSnapPerMille, 1000) \
-    /* 0: historical pair gate; 1: window; 2: window and compensated bursts. */ \
+    /* 0: pair gate; 1: window; 2: compensated bursts; 3: clipped gap excess; 4: source-only gap phase; */ \
+    /* 5: whole gap excess within the max-lag phase limit, recentred within T. */ \
     X(uint64_t, playout_smoothing_windowed_cadence, playoutSmoothingWindowedCadence, 0) \
     X(uint64_t, playout_smoothing_recovery_us, playoutSmoothingRecoveryUs, 200000) \
     /* Zero maximum disables the learned smoothed-cadence readiness reserve. */ \
@@ -150,6 +151,17 @@
     /* Zero drops the retiming to the raw slot at a cadence reset; nonzero */ \
     /* eases it there by at most this many microseconds per frame. */ \
     X(uint64_t, playout_smoothing_reset_slew_us, playoutSmoothingResetSlewUs, 0) \
+    /* Revision 5: per-frame share of the retained phase returned toward zero */ \
+    /* within the tolerance the interval has left. */ \
+    X(uint64_t, playout_smoothing_recenter_per_mille, playoutSmoothingRecenterPerMille, 0) \
+    /* Absorb microstutter: a standing presentation reserve that revision 5 */ \
+    /* may spend on late source frames. A nonzero share scales it by the */ \
+    /* fitted source period, capped at the reserve. */ \
+    X(uint64_t, playout_smoothing_absorb_reserve_us, playoutSmoothingAbsorbReserveUs, 0) \
+    X(uint64_t, playout_smoothing_absorb_reserve_period_per_mille, playoutSmoothingAbsorbReservePeriodPerMille, 0) \
+    /* Revision 5: the retained phase limit is at least this share of the */ \
+    /* fitted source period. Zero keeps the fixed limit alone. */ \
+    X(uint64_t, playout_smoothing_max_lag_period_per_mille, playoutSmoothingMaxLagPeriodPerMille, 0) \
     X(uint64_t, playout_metronome_enabled, playoutMetronomeEnabled, 0) \
     X(uint64_t, playout_delay_start_period_per_mille, playoutDelayStartPeriodPerMille, 0) \
     X(uint64_t, playout_delay_maximum_period_per_mille, playoutDelayMaximumPeriodPerMille, 0) \
@@ -179,8 +191,8 @@
     /* Waiting-frame capacity for admission and the delay budget; 0 keeps */ \
     /* the historical three (VrrMaximumQueuedFrames). */ \
     X(uint64_t, playout_queue_frames, playoutQueueFrames, 0) \
-    /* Nonzero latches the first present after a gap at least this long, so */ \
-    /* it cannot tear against the driver's below-VRR-range frame repeat. */ \
+    /* Nonzero latches the first present at a gap this long, so */ \
+    /* it cannot tear against a driver-managed LFC repeat after a long gap. */ \
     X(uint64_t, vrr_floor_latch_gap_us, vrrFloorLatchGapUs, 0) \
     /* Nonzero lets the presenter latch a planned tearing present when native */ \
     /* frame statistics show its predecessor still pending or scanning out. */ \
@@ -503,6 +515,11 @@ public:
     // Learned Reduce judder readiness reserve; already included in each
     // decision's cadenceSmoothingUs, never in playoutDelayUs.
     uint64_t smoothingReserveUs() const { return m_SmoothingReserveUs; }
+    // Absorb microstutter reserve at the current source period; included in
+    // each revision-5 decision's cadenceSmoothingUs, never in playoutDelayUs.
+    uint64_t absorbReserveUs() const;
+    // Revision 5 retained phase limit at the current source period.
+    uint64_t smoothingPhaseLimitUs() const;
     unsigned int playoutBandIndex() const;
     uint64_t playoutBandSamples() const;
     const VrrTimingParameters& parameters() const;
@@ -531,6 +548,7 @@ private:
     Vrr13::RecentReadiness m_RecentReadiness;
     uint64_t m_CadenceStableSinceUs = 0;
     uint64_t m_PreviousSmoothingIntervalUs = 0;
+    int64_t m_SourceGapSmoothingUs = 0;
     std::array<uint64_t, 4> m_SmoothingCadenceIntervals{};
     size_t m_SmoothingCadenceCount = 0;
     size_t m_SmoothingCadenceIndex = 0;
@@ -572,6 +590,7 @@ private:
 
     struct CadenceObservation {
         uint64_t intervalUs = 0;
+        uint32_t rtpDelta = 0;
         uint64_t frameDelta = 1;
         bool usedRtpTimestamp = false;
         bool eligible = false;
@@ -624,6 +643,9 @@ private:
     // moves the smoothed schedule later by the recent shortfall that exceeds
     // the tolerated lateness; it is zero unless its parameters enable it.
     bool smoothingReserveEnabled() const;
+    // Revision 5 buffers only the part of an early retiming that no standing
+    // reserve covers; earlier revisions buffer the whole retiming.
+    int64_t bufferedSmoothingUs(int64_t smoothingUs) const;
     void observeSmoothingReserve(bool engaged, int64_t shortfallUs,
                                  uint64_t nowUs);
     // Metronome: the schedule advances from the last presented slot by the

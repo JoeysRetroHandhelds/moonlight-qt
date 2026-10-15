@@ -294,7 +294,8 @@ bool Pacer::initialize(SDL_Window* window, int maxVideoFps,
                        bool enablePacing, bool enableVsync,
                        bool enableVrr, int vrrDisplayRefreshHz,
                        bool smoothVrrFrameTiming, const QString& calibrationKey,
-                       int vrrLatencyMode, VrrTimingOptions vrrTimingOptions)
+                       int vrrLatencyMode, VrrTimingOptions vrrTimingOptions,
+                       bool absorbVrrMicrostutter)
 {
     m_MaxVideoFps = maxVideoFps;
     m_RendererAttributes = m_VsyncRenderer->getRendererAttributes();
@@ -311,6 +312,7 @@ bool Pacer::initialize(SDL_Window* window, int maxVideoFps,
         config.streamRateHz = maxVideoFps;
         config.displayRefreshHz = vrrDisplayRefreshHz;
         config.smoothFrameTiming = smoothVrrFrameTiming;
+        config.absorbMicrostutter = smoothVrrFrameTiming && absorbVrrMicrostutter;
         VrrFallbackReason fallbackReason = VrrFallbackReason::NoFallback;
         if (!calibrationKey.isEmpty()) {
             const QString display = QString::fromUtf8(SDL_GetDisplayName(SDL_GetWindowDisplayIndex(window)));
@@ -345,6 +347,17 @@ bool Pacer::initialize(SDL_Window* window, int maxVideoFps,
                     .arg(policy.playoutSmoothingWindowedCadence)
                     .arg(policy.playoutSmoothingRecoveryUs);
                 context += QStringLiteral("|catchup=%1").arg(policy.playoutCatchupPerMille);
+                if (policy.playoutSmoothingRecenterPerMille != 0) {
+                    context += QStringLiteral("|recenter=%1").arg(policy.playoutSmoothingRecenterPerMille);
+                }
+                if (policy.playoutSmoothingMaxLagPeriodPerMille != 0) {
+                    context += QStringLiteral("|lag-period=%1").arg(policy.playoutSmoothingMaxLagPeriodPerMille);
+                }
+                if (policy.playoutSmoothingAbsorbReserveUs != 0) {
+                    context += QStringLiteral("|absorb-microstutter=%1-%2")
+                        .arg(policy.playoutSmoothingAbsorbReserveUs)
+                        .arg(policy.playoutSmoothingAbsorbReservePeriodPerMille);
+                }
                 if (policy.playoutSmoothingReadinessBound != 0) {
                     context += QStringLiteral("|smoothing-readiness-bound=%1")
                         .arg(policy.playoutSmoothingReadinessBound);
@@ -401,6 +414,7 @@ bool Pacer::initialize(SDL_Window* window, int maxVideoFps,
                         SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
                                     "VRR pacing: target %d Hz with %d FPS stream (adaptive timestamp playout, frame timing %s, buffer %.2f frames, target %.2f%%, history %d s, tolerance %.2f ms)",
                                     m_DisplayFps, m_MaxVideoFps,
+                                    config.absorbMicrostutter ? "smoothed, absorbing microstutter" :
                                     config.smoothFrameTiming ? "smoothed" : "follows host timestamps",
                                     config.timingOptions.bufferPerMille / 1000.0,
                                     config.timingOptions.targetHundredths / 100.0,

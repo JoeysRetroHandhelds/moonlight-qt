@@ -323,6 +323,7 @@ ffmpeg {
         streaming/video/ffmpeg-renderers/pacer/vrr/readinessfeedback.h \
         streaming/video/ffmpeg-renderers/pacer/vrr/smoothnessfeedback.h \
         streaming/video/ffmpeg-renderers/pacer/vrr/vrrtimingcontroller.h \
+        streaming/video/ffmpeg-renderers/pacer/vrr/sourcegapsmoothing.h \
         streaming/video/ffmpeg-renderers/pacer/vrr/vrrframedroppolicy.h \
         streaming/video/ffmpeg-renderers/pacer/vrr/vrrcatchup.h \
         streaming/video/ffmpeg-renderers/pacer/vrr/receivedeadline.h \

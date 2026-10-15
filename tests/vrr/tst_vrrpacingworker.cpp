@@ -3503,7 +3503,7 @@ void testDeepTraceRequestsNativeObservationsWithoutChangingMode()
            "captured calibration must restore prior history without inventing fresh successes");
     expect(fields.value(columns.indexOf("param_playout_prediction_only")) == "1" &&
                fields.value(columns.indexOf("param_playout_responsive_buffer")) == "12" &&
-               fields.value(columns.indexOf("param_playout_smoothing_windowed_cadence")) == "2" &&
+               fields.value(columns.indexOf("param_playout_smoothing_windowed_cadence")) == "5" &&
                fields.value(columns.indexOf("param_playout_native_hitch_adaptation")) == "0",
            "capture must identify production interval-quality adaptation for exact replay");
     expect(header.contains("frame_receive_us") &&

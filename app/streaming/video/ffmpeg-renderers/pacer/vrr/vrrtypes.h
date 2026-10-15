@@ -30,6 +30,9 @@ struct VrrSessionConfig {
     // A session preference resolved into the recorded controller parameters.
     // All presets retain jitter buffering and display-spacing protection.
     bool smoothFrameTiming = true;
+    // Adds a standing presentation reserve that Reduce judder may spend on
+    // late source frames. Has no effect unless smoothFrameTiming is set.
+    bool absorbMicrostutter = false;
     // Linux readiness boundaries differ from D3D11. Resolve into trace parameters.
     bool readinessHitchFeedback = false;
     // Historical near-ceiling checkbox, retained for old tests and captures.

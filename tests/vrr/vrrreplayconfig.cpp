@@ -564,8 +564,16 @@ bool validateVrrTimingParameters(const VrrTimingParameters& value,
             (value.playoutLateRecovery && value.playoutCatchupPerMille == 0)) {
         return fail("playout_late_recovery must be 0 or 1 and requires nonzero catchup");
     }
-    if (value.playoutSmoothingWindowedCadence > 2) {
-        return fail("playout_smoothing_windowed_cadence must be in 0..2");
+    if (value.playoutSmoothingWindowedCadence > 5) {
+        return fail("playout_smoothing_windowed_cadence must be in 0..5");
+    }
+    // Revisions before 5 ignore these, so historical snapshots may be layered
+    // over current values.
+    if (value.playoutSmoothingRecenterPerMille > 1000 ||
+            value.playoutSmoothingAbsorbReserveUs > 20000 ||
+            value.playoutSmoothingAbsorbReservePeriodPerMille > 1000 ||
+            value.playoutSmoothingMaxLagPeriodPerMille > 1000) {
+        return fail("playout_smoothing recentre must be 0..1000 per mille, absorb reserve 0..20000 us, and the absorb and lag period shares 0..1000 per mille");
     }
     if (value.playoutSmoothingRecoveryUs > 1000000) {
         return fail("playout_smoothing_recovery_us must be in 0..1000000");

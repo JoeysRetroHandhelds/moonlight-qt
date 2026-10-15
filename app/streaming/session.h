@@ -215,7 +215,8 @@ private:
                        bool* effectiveVrr = nullptr, bool smoothVrrFrameTiming = true,
                        bool gamescopeMailbox = false, int vrrLatencyMode = 0,
                        bool gamescopeRepaint = false,
-                       VrrTimingOptions vrrTimingOptions = {});
+                       VrrTimingOptions vrrTimingOptions = {},
+                       bool absorbVrrMicrostutter = false);
 
     static
     void clStageStarting(int stage);
@@ -279,6 +280,7 @@ private:
         bool gamescopeMailbox = false;
         bool gamescopeRepaint = false;
         bool smoothVrrFrameTiming = true;
+        bool absorbVrrMicrostutter = false;
         int refreshRate = 0;
         StreamingPreferences::WindowMode effectiveWindowMode = StreamingPreferences::WM_WINDOWED;
         StreamingPreferences::VideoDecoderSelection decoderSelection = StreamingPreferences::VDS_AUTO;

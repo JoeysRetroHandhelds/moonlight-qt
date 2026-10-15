@@ -1860,6 +1860,23 @@ Flickable {
 
                 CheckBox {
                     hoverEnabled: true
+                    text: qsTr("Absorb microstutter (adds latency)")
+                    font.pointSize: 12
+                    visible: StreamingPreferences.enableVrr
+                    enabled: StreamingPreferences.enableVsync && StreamingPreferences.enableVrr &&
+                             StreamingPreferences.smoothVrrFrameTiming
+                    checked: StreamingPreferences.absorbVrrMicrostutter
+                    onCheckedChanged: StreamingPreferences.absorbVrrMicrostutter = checked
+
+                    ToolTip.delay: 1000
+                    ToolTip.timeout: 10000
+                    ToolTip.visible: hovered
+                    ToolTip.text: qsTr("Lets Reduce judder even out short frame-time spikes from the game or host. Keeps a small reserve and allows more delay while frame times are uneven. Requires Reduce judder. Large gaps remain visible.") + "\n\n" +
+                                  qsTr("Reconnect the stream after changing this setting.")
+                }
+
+                CheckBox {
+                    hoverEnabled: true
                     text: qsTr("High-performance GPU power while streaming")
                     font.pointSize: 12
                     visible: Qt.platform.os === "linux"

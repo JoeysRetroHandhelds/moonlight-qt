@@ -45,6 +45,57 @@ its original accounting. Diagnostic
 binary. Tests and frozen capture guards establish software behavior; live
 GPU/compositor behavior requires a coordinated comparison.
 
+Absorb microstutter recovery (2026-10-14): the recovered source-gap smoother
+records revision 5. Reduce judder alone corrects the excess beyond the configured
+interval tolerance within a phase limit of max(2 ms, 12% of the fitted period).
+Absorb adds a standing reserve of min(2 ms, 15% of the fitted period) and uses
+max(8 ms, 20% of the fitted period) for its phase limit. The previous 4 ms
+Absorb limit clipped 763 of 15,577 adjacent submitted-frame decisions in the
+latest completed capture, leaving short source displacements partly uncorrected.
+The 8 ms limit changes correction room, not the standing reserve, frame admission,
+profile buffer allowance, source-rate detector or presentation floor. Captured
+parameters retain the old limit for exact replay; the calibration identity
+includes the new limit so incompatible cached profiles cannot cross-seed it.
+This recovery excludes the stash's separate decode-hold and LFC experiments.
+
+Validation selected `/home/deck/moonlight-logs/moonlight-pacing-20261014-211054-23716.vrrtrace`
+(5,187,557 bytes, last write 2026-10-15 02:16:12.575886 UTC, SHA-256
+`57580ed4d55001c6ac9eb574c1b575501f3bff4a56d8b08d12863b0108039b60`).
+Its clean-close footer accounts for all 15,677 rows. Fresh recorded-policy
+baselines before and after the final rebuild both exit zero with valid sequence
+integrity and `baseline_exact=true`. The candidate uses the full captured
+controller snapshot with only `playout_smoothing_max_lag_us` changed to 8,000;
+a partial override over generic defaults is not the matched comparison.
+
+| Matched replay metric | Stashed 4 ms | Fixed 8 ms |
+|---|---:|---:|
+| Presented interval-change pairs over 2 ms | 53 per mille | 12 per mille |
+| Presented interval-change p99 | 4.133 ms | 2.210 ms |
+| Decode-to-submission mean / p50 | 16.541 / 15.506 ms | 14.784 / 13.817 ms |
+| Decode-to-submission p95 / p99 | 24.207 / 32.481 ms | 23.337 / 31.818 ms |
+| Decode-to-submission p99.9 / p99.95 | 34.858 / 36.811 ms | 36.777 / 37.109 ms |
+| Sender-spacing residual p99 | 4.325 ms | 7.736 ms |
+| Sender-relative jerk p99 | 6.204 ms | 8.398 ms |
+
+The deliberate source retiming improves presented cadence while reducing sender
+timestamp fidelity; it does not establish an abnormal source stall. The 6/8/10/12
+ms sweep puts the useful knee at 8 ms. Ten matched nominal, periodic decision,
+preparation, submission and two-frame scheduler-burst scenarios pass their
+interval-safety and latency assertions without worker saturation. The nominal
+p99 bound is 33 ms and the injected-fault bound is 45 ms. A heavier three-frame
+4+4 ms wake injection saturates both policies and is excluded from cadence and
+latency conclusions. The deterministic 6 ms displacement regression reduces
+maximum presented interval change from 2,501 to 1,001 us on both presenter paths.
+All fourteen selected VRR suites and replay help pass after the final diagnostic
+build; the native app build, offscreen help and Desktop launcher help pass.
+
+Replay retains admission and GPU/native execution costs. It cannot verify GPU
+contention, compositor improvement or physical scanout. Raster bounds remain
+unclassified on this Vulkan capture. Live visual improvement needs a fresh
+session; an already running executable retains its old image. Complete configs,
+test logs, baseline/candidate JSON, tail metrics, raster bounds and binary hashes
+are in `build/absorb-fix-20261014/validation.json` and its sibling artifacts.
+
 # Streaming, VRR, and timing architecture
 
 This is the persistent technical orientation for this fork. Read it at the start
@@ -112,8 +163,9 @@ deep tracing is enabled. The 1280x800 and 4K overlay-fit fixtures include host
 smoothness. Native Wayland and unsigned all-platform nightly packaging remain.
 The 2026-10-09 source-relative cadence detector adds separate submission and
 identity-matched OS display evidence without changing revision-12 control.
-The 2026-10-10 replay qualification additionally caps native scheduled
-smoothing and its reserve at 2 ms, retaining 6/3 ms on worker-paced presenters.
+Current source-gap smoothing uses the same bounded phase policy on native
+scheduled and worker-paced presenters; section 8.3 describes its reserve and
+input-buffer accounting. Recorded older policies retain their own bounds.
 Schema-5 rows now append `lost_packets` so packet-loss buffer eligibility is
 replayable; older rows without it retain their historical zero-loss input.
 Qualified Windows D3D11 VRR playback defaults to waitable DXGI queue admission.
@@ -3205,10 +3257,10 @@ It also sets `latchedFloorDisabled=1` and disables the extra queue-mode budget.
 | GPU readiness ceiling | `min(12,000 us, fitted source period)`; target/deadline unchanged |
 | Capacity telemetry | `playout_capacity_telemetry=1` exposes unclamped demand and cap pressure in live decisions |
 | Smoothing gain | 150 when Reduce judder is checked; 0 when unchecked |
-| Smoothing period EMA | 25 per mille with fractional carry, plus 20,000 per million phase-error feedback; active only with smoothing enabled |
-| Positive smoothing lag cap | 2,000 us for native scheduled presentation; 6,000 us for worker-paced presentation, shared with the readiness reserve; active only with smoothing enabled |
-| Smoothing readiness reserve | p98 of the last 128 smoother-caused shortfalls minus 500 us, at most 2,000 us for native scheduled or 3,000 us for worker-paced presentation, +250 us per frame, released at 500 us/s; zero when unchecked |
-| Smoothing readiness bound | Enabled with Reduce judder; early retiming preserves known decode readiness and the raw target's typical render allowance; smoothing-only misses cannot grow or renew the interval buffer |
+| Smoothing period EMA | Historical revisions only; revision 5 uses consecutive RTP gaps and the fitted source period, with no phase-error feedback |
+| Retained smoothing phase limit | Both presenter paths use max(tolerance, 2,000 us, 12% of fitted period); Absorb microstutter uses max(tolerance, 8,000 us, 20% of fitted period) |
+| Smoothing reserve | No learned readiness reserve in revision 5; Absorb microstutter adds a standing min(2,000 us, 15% of fitted period), otherwise zero |
+| Smoothing readiness bound | Revision 5 retains source phase independently of readiness; the final target respects known readiness, and input-buffer evidence excludes positive retiming and standing reserve |
 | Render lead floor | 3,000 us |
 | Preparation start | Use the existing playout interval (`playout_prepare_on_arrival=1`), with no additional post-submission delay |
 | Minimum preparation lead input | 2,500 us |
@@ -3260,6 +3312,29 @@ learning. Do not apply that fallback path's percentile-spread formula to normal
 timestamp production behavior.
 
 ### 8.3 Cadence smoothing
+
+Current sessions use the revision-5 source-gap policy. A consecutive valid RTP
+gap G is compared with the fitted source period P. Error through the configured
+tolerance T is accepted; the retained phase changes by the entire excess beyond
+T, bounded by the phase limit. Clean intervals can return phase toward zero
+only using the tolerance those intervals have left. The source-only phase is
+independent of local arrival, decode and presentation timing. The final target
+still respects known readiness and the physical display floor. Rate changes,
+phase breaks, invalid/nonadjacent timestamps and rebases reset source phase.
+
+Reduce judder uses max(T, 2 ms, 12% of P) for the phase limit. The optional
+**Absorb microstutter (adds latency)** preference uses max(T, 8 ms, 20% of P)
+and adds a standing reserve of min(2 ms, 15% of P), including across phase
+resets. It defaults off, requires Reduce judder, is snapshotted across decoder
+recreation, and supports `--vrr-absorb-microstutter` and its `--no-` form.
+Reconnect after changing either preference. Readiness evidence uses
+`source + min(0, phase + reserve)` so the adaptive input buffer cannot release
+the reserve as spare delivery slack. Queue capacity accounts for the phase
+limit and reserve separately from the timing profile's buffer cap. No learned
+smoothing reserve is active in revision 5. Large source gaps remain bounded by
+the correction room; this is not a fixed FPS generator or a scanout guarantee.
+
+The following describes recorded revisions 0-2, retained for exact replay.
 
 The **Reduce judder** checkbox controls cadence smoothing
 independently of the three VRR timing presets. It defaults on and preserves

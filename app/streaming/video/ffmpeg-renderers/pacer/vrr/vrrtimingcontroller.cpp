@@ -1,5 +1,6 @@
 #include "vrrcatchup.h"
 #include "vrrtimingcontroller.h"
+#include "sourcegapsmoothing.h"
 #include "../../../../vrrratepolicy.h"
 
 #include <algorithm>
@@ -78,6 +79,27 @@ constexpr uint64_t kPlayoutMetronomeSnapPerMille = 3000;
 // used to be enough, so a four-frame host hitch became a 30 Hz source and
 // every rate-dependent term followed it there and back.
 constexpr uint64_t kRateCandidateMinimumUs = 200000;
+// Reduce judder revision 5: retained source-gap phase limit. The whole phase
+// may return toward zero in one frame, limited by the tolerance left in that
+// gap. The input buffer covers early retiming the limit admits. At low rates
+// the limit follows a share of the source period instead: a fixed limit is a
+// shrinking share of a long frame and leaves most of a low-rate source's gap
+// jitter on screen, where below the panel's variable-refresh floor an uneven
+// cadence also lands against the driver's repeated frames.
+constexpr uint64_t kSourceGapPhaseLimitUs = 2000;
+constexpr uint64_t kSourceGapPhaseLimitPeriodPerMille = 120;
+constexpr uint64_t kSourceGapRecenterPerMille = 1000;
+// Absorb microstutter widens the phase limit and holds a standing reserve of
+// a share of the fitted source period, capped, so late frames within it never
+// wait for the input buffer to learn them.
+// A 4 ms phase clips the short/long pairs in the matched 116 FPS capture,
+// leaving 4.1 ms p99 presented jerk. 8 ms is the replay knee: 2.2 ms p99,
+// lower median residence; 10/12 ms do not materially improve it. This is
+// correction room, not an additional fixed delay or permission to skip frames.
+constexpr uint64_t kAbsorbPhaseLimitUs = 8000;
+constexpr uint64_t kAbsorbPhaseLimitPeriodPerMille = 200;
+constexpr uint64_t kAbsorbReservePeriodPerMille = 150;
+constexpr uint64_t kAbsorbReserveMaximumUs = 2000;
 // Historical post-present acquisition spacing retains this minimum lead.
 // Production uses native acquisition backpressure without software spacing.
 constexpr uint64_t kRenderStartMinimumLeadUs = 2500;
@@ -331,6 +353,31 @@ VrrTimingParameters vrrTimingParametersForSession(
     parameters.playoutSmoothingReadinessBound =
         parameters.playoutResponsiveBuffer >= 6 && config.smoothFrameTiming ? 1 : 0;
     parameters.playoutSmoothingWindowedCadence = 2;
+    if (config.smoothFrameTiming) {
+        // Source gaps within T are accepted. The whole excess beyond T is
+        // corrected within a retained phase limit, and the phase recentres
+        // only with the tolerance a clean gap has left. Absorb microstutter
+        // adds a standing reserve for late frames. No learned readiness
+        // reserve is used. Historical revisions stay replayable.
+        parameters.playoutSmoothingWindowedCadence = 5;
+        parameters.playoutSmoothingMaxLagUs = std::max<uint64_t>(
+            options.toleranceUs, kSourceGapPhaseLimitUs);
+        parameters.playoutSmoothingMaxLagPeriodPerMille = kSourceGapPhaseLimitPeriodPerMille;
+        parameters.playoutSmoothingRecenterPerMille = kSourceGapRecenterPerMille;
+        if (config.absorbMicrostutter) {
+            parameters.playoutSmoothingAbsorbReserveUs = kAbsorbReserveMaximumUs;
+            parameters.playoutSmoothingAbsorbReservePeriodPerMille = kAbsorbReservePeriodPerMille;
+            parameters.playoutSmoothingMaxLagUs = std::max<uint64_t>(
+                parameters.playoutSmoothingMaxLagUs, kAbsorbPhaseLimitUs);
+            parameters.playoutSmoothingMaxLagPeriodPerMille = kAbsorbPhaseLimitPeriodPerMille;
+        }
+        parameters.playoutSmoothingReserveMaxUs = 0;
+        parameters.playoutSmoothingReserveToleranceUs = 0;
+        parameters.playoutSmoothingReservePercentilePerMille = 0;
+        parameters.playoutSmoothingReserveReleaseUsPerSecond = 0;
+        parameters.playoutSmoothingResetSlewUs = 0;
+        parameters.playoutSmoothingPeriodFeedbackPerMillion = 0;
+    }
     // Four consecutive intervals qualify the new window. Source-rate changes
     // already have their own confirmation gate; another 200 ms without
     // smoothing after a recovered gap needlessly reproduces source jitter.
@@ -838,7 +885,7 @@ VrrTimingDecision VrrTimingController::schedule(const PacedFrame& frame,
                     saturatingAdd(delayBeforeUs, smoothingReserveUs)));
             }
             desiredRetimingUs = retimingUs;
-            if (readinessBoundedSmoothing) {
+            if (readinessBoundedSmoothing && m_Parameters.playoutSmoothingWindowedCadence < 4) {
                 // Decode readiness is already known. Spend only the time left
                 // before the raw slot, retaining its typical render allowance.
                 // A raw-late frame keeps that deadline for real buffer feedback;
@@ -849,6 +896,10 @@ VrrTimingDecision VrrTimingController::schedule(const PacedFrame& frame,
                     static_cast<int64_t>(smoothingReserveUs));
                 smoothingReadyPushUs = static_cast<uint64_t>(retimingUs - desiredRetimingUs);
             }
+            // Source-gap correction is a retained source phase. Clipping it
+            // to this frame's readiness removes/reapplies that phase on later
+            // clean gaps, magnifying them. Revision 4 keeps the phase intact;
+            // targetUs still applies the independent known-readiness floor.
             m_LastSmoothingRetimingUs = retimingUs;
             smoothingUs = retimingUs + static_cast<int64_t>(smoothingReserveUs);
         }
@@ -858,7 +909,7 @@ VrrTimingDecision VrrTimingController::schedule(const PacedFrame& frame,
         // otherwise look early and the cushion would release until frames
         // were late all the time.
         updatePlayoutDelay(frame, cadence, rebased,
-                           readyOffsetUs - (smoothingUs - remainingDebtUs),
+                           readyOffsetUs - (bufferedSmoothingUs(smoothingUs) - remainingDebtUs),
                            nowUs);
     }
     else {
@@ -1310,7 +1361,11 @@ VrrTimingDecision VrrTimingController::schedule(const PacedFrame& frame,
     // output timestamp. GPU completion sampled after a pacing-queue wait is
     // only an upper bound and would count our own delay as fresh jitter.
     m_Pending.inputObservationUs = nowUs;
-    m_Pending.inputSlotUs = addSigned(m_Pending.intervalIntendedUs, decision.readinessBudgetUs);
+    // A standing reserve or a later retiming is not delivery slack the input
+    // buffer may release; only an early retiming the reserve does not cover
+    // must be buffered.
+    m_Pending.inputSlotUs = addSigned(addSigned(decision.sourceTimeUs,
+        bufferedSmoothingUs(decision.cadenceSmoothingUs)), decision.readinessBudgetUs);
     m_Pending.inputReadinessBudgetUs = decision.readinessBudgetUs;
     m_Pending.inputClockOffsetUs = inputClockOffsetUs(nowUs);
     // Readiness is the (estimated) decode completion: PyroWave's decoder
@@ -1424,6 +1479,7 @@ VrrTimingDecision VrrTimingController::schedule(const PacedFrame& frame,
 
 void VrrTimingController::resetCadenceSmoothing()
 {
+    m_SourceGapSmoothingUs = 0;
     m_HaveSmoothedBasis = false;
     m_LastSmoothedBasisUs = 0;
     m_LastSmoothedBasisUsQ16 = 0;
@@ -1634,6 +1690,35 @@ int64_t VrrTimingController::cadenceSmoothingAdjustUs(
     const CadenceObservation& cadence, bool rebased, uint64_t rawBasisUs,
     uint64_t playoutDelayUs, uint64_t reserveUs)
 {
+    if (m_Parameters.playoutSmoothingWindowedCadence >= 3) {
+        // A cadence reset drops only the retained phase. The standing reserve
+        // stays, so a reset never steps the whole schedule by the reserve.
+        const int64_t standingUs = static_cast<int64_t>(absorbReserveUs());
+        if (m_Parameters.playoutSmoothingGainPerMille == 0 || rebased ||
+            cadence.sourceRateChanged || cadence.phaseDiscontinuity ||
+            !cadence.eligible || !cadence.usedRtpTimestamp || cadence.frameDelta != 1 ||
+            cadence.intervalUs == 0) {
+            resetCadenceSmoothing();
+            return standingUs;
+        }
+        // This trigger uses consecutive host RTP gaps and the existing source
+        // cadence reference. Local mapping, arrival, decode and presentation
+        // times never enter it. Keep source phase separate from readiness
+        // clipping so a late decoder cannot become new smoothing demand.
+        // Round this gap independently, like the fitted reference. The
+        // timeline's carried conversion remainder can alternate by 1 us;
+        // it must not make an exactly-at-T gap intermittently exceed T.
+        const uint64_t sourceGapUs =
+            (uint64_t(cadence.rtpDelta) * kMicrosecondsPerSecond + kRtpClockRate / 2) / kRtpClockRate;
+        m_SourceGapSmoothingUs = m_Parameters.playoutSmoothingWindowedCadence >= 5 ?
+            Vrr13::sourceGapPhaseUs(sourceGapUs, m_SourcePeriodUs,
+                intervalQualityToleranceUs(m_Parameters), smoothingPhaseLimitUs(),
+                m_Parameters.playoutSmoothingRecenterPerMille, m_SourceGapSmoothingUs) :
+            Vrr13::sourceGapSmoothingUs(sourceGapUs, m_SourcePeriodUs,
+                intervalQualityToleranceUs(m_Parameters), m_SourceGapSmoothingUs);
+        m_SmoothingEngaged = true;
+        return std::max(m_SourceGapSmoothingUs + standingUs, -static_cast<int64_t>(playoutDelayUs));
+    }
     // A half-period interval is 375 RTP ticks at 120 FPS: converting it to
     // whole microseconds alternates 4166/4167. Do not turn that rounding into
     // a burst. Also retain bounded short/long compensation while the fitted
@@ -1790,6 +1875,31 @@ int64_t VrrTimingController::cadenceSmoothingAdjustUs(
     return adjustUs;
 }
 
+uint64_t VrrTimingController::absorbReserveUs() const
+{
+    if (m_Parameters.playoutSmoothingWindowedCadence < 5 ||
+            m_Parameters.playoutSmoothingGainPerMille == 0) {
+        return 0;
+    }
+    const uint64_t maximumUs = m_Parameters.playoutSmoothingAbsorbReserveUs;
+    const uint64_t perMille = m_Parameters.playoutSmoothingAbsorbReservePeriodPerMille;
+    return perMille != 0 ? std::min(maximumUs, scaledPerMille(m_SourcePeriodUs, perMille)) : maximumUs;
+}
+
+uint64_t VrrTimingController::smoothingPhaseLimitUs() const
+{
+    const uint64_t perMille = m_Parameters.playoutSmoothingMaxLagPeriodPerMille;
+    return m_Parameters.playoutSmoothingWindowedCadence >= 5 && perMille != 0 ?
+        std::max(m_Parameters.playoutSmoothingMaxLagUs, scaledPerMille(m_SourcePeriodUs, perMille)) :
+        m_Parameters.playoutSmoothingMaxLagUs;
+}
+
+int64_t VrrTimingController::bufferedSmoothingUs(int64_t smoothingUs) const
+{
+    return m_Parameters.playoutSmoothingWindowedCadence >= 5 && !metronomeEnabled() ?
+        std::min<int64_t>(smoothingUs, 0) : smoothingUs;
+}
+
 bool VrrTimingController::smoothingReserveEnabled() const
 {
     return m_Parameters.playoutSmoothingReserveMaxUs != 0 &&
@@ -1896,6 +2006,7 @@ VrrTimingController::observeCadence(const PacedFrame& frame)
         m_LastCadenceUsedRtp = true;
 
         observation.intervalUs = intervalUs;
+        observation.rtpDelta = wrappedDelta;
         observation.usedRtpTimestamp = true;
         observeRtpCadence(wrappedDelta, observation);
         return observation;
@@ -3583,7 +3694,7 @@ uint64_t VrrTimingController::playoutQueueLimitUs() const
     const uint64_t capacity = period * queuedFrameCapacity();
     const uint64_t work = saturatingAdd(m_RenderLeadUs, m_Parameters.presentationSafetyUs);
     const uint64_t smoothing = m_Parameters.playoutSmoothingGainPerMille != 0 ?
-        m_Parameters.playoutSmoothingMaxLagUs : 0;
+        saturatingAdd(smoothingPhaseLimitUs(), absorbReserveUs()) : 0;
     const uint64_t occupied = saturatingAdd(work, smoothing);
     return capacity > occupied ? capacity - occupied : 0;
 }

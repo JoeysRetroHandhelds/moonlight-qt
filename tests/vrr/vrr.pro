@@ -60,6 +60,8 @@ preferences.file = $$PWD/preferences.pro
 SUBDIRS += preferences
 
 timingcontroller.file = $$PWD/timingcontroller.pro
+sourcegapsmoothing.file = $$PWD/sourcegapsmoothing.pro
+SUBDIRS += sourcegapsmoothing
 framelimitercapabilities.file = $$PWD/framelimitercapabilities.pro
 ratepolicy.file = $$PWD/ratepolicy.pro
 diagnostics.file = $$PWD/diagnostics.pro

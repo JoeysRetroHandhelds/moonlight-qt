@@ -108,11 +108,27 @@ void VrrReplayConfigTest::windowedSmoothingPolicyRoundTrip()
     QString error;
     auto production = vrrTimingParametersForSession(VrrSessionConfig{});
     QVERIFY2(applyVrrReplayControllerSnapshot(vrrTimingParametersToJson(production), parameters, error), qPrintable(error));
-    QCOMPARE(parameters.playoutSmoothingWindowedCadence, uint64_t(2));
+    QCOMPARE(parameters.playoutSmoothingWindowedCadence, uint64_t(5));
     QCOMPARE(parameters.playoutSmoothingRecoveryUs, uint64_t(0));
     QVERIFY(!applyVrrReplayControllerSnapshot(
-        {{"playout_smoothing_windowed_cadence", 3}}, parameters, error));
-    QCOMPARE(parameters.playoutSmoothingWindowedCadence, uint64_t(2));
+        {{"playout_smoothing_windowed_cadence", 6}}, parameters, error));
+    QCOMPARE(parameters.playoutSmoothingWindowedCadence, uint64_t(5));
+    VrrSessionConfig absorbing;
+    absorbing.absorbMicrostutter = true;
+    VrrTimingParameters absorbed;
+    QVERIFY2(applyVrrReplayControllerSnapshot(
+        vrrTimingParametersToJson(vrrTimingParametersForSession(absorbing)), absorbed, error), qPrintable(error));
+    QCOMPARE(absorbed.playoutSmoothingAbsorbReserveUs, uint64_t(2000));
+    QCOMPARE(absorbed.playoutSmoothingMaxLagUs, uint64_t(8000));
+    QCOMPARE(absorbed.playoutSmoothingAbsorbReservePeriodPerMille, uint64_t(150));
+    QCOMPARE(absorbed.playoutSmoothingRecenterPerMille, uint64_t(1000));
+    QCOMPARE(absorbed.playoutSmoothingMaxLagPeriodPerMille, uint64_t(200));
+    QVERIFY(!applyVrrReplayControllerSnapshot(
+        {{"playout_smoothing_recenter_per_mille", 1001}}, absorbed, error));
+    QCOMPARE(absorbed.playoutSmoothingRecenterPerMille, uint64_t(1000));
+    QVERIFY(!applyVrrReplayControllerSnapshot(
+        {{"playout_smoothing_max_lag_period_per_mille", 1001}}, absorbed, error));
+    QCOMPARE(absorbed.playoutSmoothingMaxLagPeriodPerMille, uint64_t(200));
     QVERIFY(!applyVrrReplayControllerSnapshot(
         {{"playout_smoothing_recovery_us", 1000001}}, parameters, error));
     QCOMPARE(parameters.playoutSmoothingRecoveryUs, production.playoutSmoothingRecoveryUs);
@@ -132,7 +148,15 @@ void VrrReplayConfigTest::judderReservePolicyRoundTrip()
     QCOMPARE(parameters.playoutSmoothingPeriodFeedbackPerMillion, uint64_t(0));
     QCOMPARE(parameters.playoutSmoothingReadinessBound, uint64_t(0));
     QString error;
-    const auto production = vrrTimingParametersForSession(VrrSessionConfig{});
+    // Explicit revision-2 snapshot retains the historical reserve contract.
+    auto production = vrrTimingParametersForSession(VrrSessionConfig{});
+    production.playoutSmoothingWindowedCadence = 2;
+    production.playoutSmoothingMaxLagUs = 6000;
+    production.playoutSmoothingReserveMaxUs = 3000;
+    production.playoutSmoothingReserveToleranceUs = 500;
+    production.playoutSmoothingReservePercentilePerMille = 980;
+    production.playoutSmoothingReserveReleaseUsPerSecond = 500;
+    production.playoutSmoothingPeriodFeedbackPerMillion = 20000;
     QVERIFY2(applyVrrReplayControllerSnapshot(vrrTimingParametersToJson(production), parameters, error), qPrintable(error));
     QCOMPARE(parameters.playoutSmoothingMaxLagUs, uint64_t(6000));
     QCOMPARE(parameters.playoutSmoothingReserveMaxUs, uint64_t(3000));
