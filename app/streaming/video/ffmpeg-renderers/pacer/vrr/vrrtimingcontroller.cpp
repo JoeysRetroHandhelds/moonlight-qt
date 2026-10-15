@@ -105,10 +105,11 @@ T percentile(const std::deque<T>& values, unsigned int requestedPercentile)
         return 0;
     }
     std::vector<T> ordered(values.begin(), values.end());
-    std::sort(ordered.begin(), ordered.end());
     const unsigned int percentileValue = std::min(100U, requestedPercentile);
     const size_t rank = std::max<size_t>(
         1, (ordered.size() * percentileValue + 99) / 100);
+    std::nth_element(ordered.begin(), ordered.begin() + rank - 1,
+                     ordered.end());
     return ordered[rank - 1];
 }
 
@@ -593,6 +594,7 @@ void VrrTimingController::clearTimeline(bool retainLearnedBudgets)
     // A phase rebase invalidates sample timestamps, but the bounded reserve
     // itself is still useful immediately in the new source epoch.
     m_GpuReadinessSamples.clear();
+    m_GpuReadinessSortedWaits.clear();
     m_LastGpuReadinessUpdateUs = 0;
     m_Pending = PendingFrame {};
 
@@ -2215,24 +2217,49 @@ void VrrTimingController::noteGpuReadyWait(uint64_t waitUs, bool completed,
     constexpr size_t kMaximumSamples = 512;
     const uint64_t windowUs = std::max<uint64_t>(
         1, m_Parameters.playoutGpuReadinessWindowUs);
+    const auto removeOldest = [&]() {
+        const uint64_t expiredWait = m_GpuReadinessSamples.front().waitUs;
+        const auto sorted = std::lower_bound(
+            m_GpuReadinessSortedWaits.begin(),
+            m_GpuReadinessSortedWaits.end(), expiredWait);
+        m_GpuReadinessSamples.pop_front();
+        if (sorted != m_GpuReadinessSortedWaits.end() &&
+                *sorted == expiredWait) {
+            m_GpuReadinessSortedWaits.erase(sorted);
+        }
+        else {
+            // Keep the percentile valid if a future state-restoration path
+            // ever changes the FIFO without updating its sorted companion.
+            m_GpuReadinessSortedWaits.clear();
+            for (const GpuReadinessSample& sample : m_GpuReadinessSamples) {
+                m_GpuReadinessSortedWaits.insert(
+                    std::upper_bound(m_GpuReadinessSortedWaits.begin(),
+                                     m_GpuReadinessSortedWaits.end(), sample.waitUs),
+                    sample.waitUs);
+            }
+        }
+    };
     while (m_GpuReadinessSamples.size() > 1 &&
            (m_GpuReadinessSamples.size() > kMaximumSamples ||
             (at > windowUs &&
              m_GpuReadinessSamples.front().completionUs < at - windowUs))) {
-        m_GpuReadinessSamples.pop_front();
+        removeOldest();
     }
     m_GpuReadinessSamples.push_back({at, waitUs});
+    m_GpuReadinessSortedWaits.insert(
+        std::upper_bound(m_GpuReadinessSortedWaits.begin(),
+                         m_GpuReadinessSortedWaits.end(), waitUs),
+        waitUs);
     while (m_GpuReadinessSamples.size() > kMaximumSamples) {
-        m_GpuReadinessSamples.pop_front();
+        removeOldest();
     }
 
-    std::deque<uint64_t> waits;
-    waits.resize(0);
-    for (const GpuReadinessSample& sample : m_GpuReadinessSamples) {
-        waits.push_back(sample.waitUs);
-    }
+    const unsigned int percentileValue = std::min(
+        100U, m_Parameters.playoutGpuReadinessPercentile);
+    const size_t rank = std::max<size_t>(
+        1, (m_GpuReadinessSortedWaits.size() * percentileValue + 99) / 100);
     const uint64_t desired = clampUnsigned(
-        saturatingAdd(percentile(waits, m_Parameters.playoutGpuReadinessPercentile),
+        saturatingAdd(m_GpuReadinessSortedWaits[rank - 1],
                       m_Parameters.playoutGpuReadinessMarginUs),
         0, gpuReadinessCeilingUs());
     if (desired > m_GpuReadinessLeadUs) {

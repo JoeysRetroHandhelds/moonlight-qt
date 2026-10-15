@@ -4540,6 +4540,18 @@ The parser supports schemas 3, 4, and 5, but the inspected strict
 calls the launchers schema-4/replay-grade. Inspect actual captured schema and
 gate results rather than trusting that label.
 
+Replay validates canonical CSV values while borrowing field slices from each
+decoded row; values retained across rows are copied. The header resolves to a
+column lookup once per scenario instead of repeatedly scanning hundreds of
+column names for every row. Exact percentile histograms allocate only occupied
+256-bucket pages, preserving microsecond bucket boundaries and summary values.
+The controller selects generic rolling percentiles without sorting the whole
+sample window and keeps a sorted GPU-wait companion to its bounded FIFO, so
+GPU readiness quantiles no longer rebuild and sort on every sample. The
+sample-window and percentile rules remain unchanged. Batch scenarios still run
+as separate processes, bounded by `--jobs`; each process currently reads the
+trace independently. These changes do not alter the trace schema.
+
 The baseline reconstructs the controller using recorded parameters, arrivals,
 execution costs, configuration, and lifecycle. Exactness includes complete
 sequence/footer accounting, valid timing relationships, required native/GPU

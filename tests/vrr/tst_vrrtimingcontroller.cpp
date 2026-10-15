@@ -4173,6 +4173,36 @@ void testGpuReadinessLeadIsSeparateFromTarget()
            "failed GPU waits must not train readiness head start");
 }
 
+void testGpuReadinessPercentileExpiresDuplicateSamples()
+{
+    const auto session = config(60, 120);
+    auto policy = vrrTimingParametersForSession(session);
+    policy.playoutGpuReadinessWindowUs = 100000;
+    policy.playoutGpuReadinessPercentile = 50;
+    policy.playoutGpuReadinessMarginUs = 0;
+    policy.playoutGpuReadinessAttackUs = 20000;
+    policy.playoutGpuReadinessReleaseUsPerSecond = 1000000;
+    VrrTimingController controller(session, true, policy);
+    controller.schedule(frame(0, 0, true, 1000000), 1000000);
+
+    controller.noteGpuReadyWait(1000, true, 1000000);
+    controller.noteGpuReadyWait(4000, true, 1010000);
+    controller.noteGpuReadyWait(4000, true, 1020000);
+    controller.noteGpuReadyWait(8000, true, 1030000);
+    expect(controller.gpuReadinessLeadUs() == 4000,
+           "GPU readiness median must include duplicate waits");
+
+    controller.noteGpuReadyWait(1000, true, 1200000);
+    expect(controller.gpuReadinessLeadUs() == 1000,
+           "expired duplicate waits must leave the readiness window");
+    controller.noteGpuReadyWait(6000, true, 1210000);
+    expect(controller.gpuReadinessLeadUs() == 1000,
+           "readiness percentile must use the same lower-rank rule");
+    controller.noteGpuReadyWait(7000, true, 1220000);
+    expect(controller.gpuReadinessLeadUs() == 6000,
+           "readiness percentile must update after window rollover");
+}
+
 void testDeferredGpuObservationDoesNotCreateBufferPressure()
 {
     auto session = config(120, 240);
@@ -7594,6 +7624,7 @@ int main()
     testStableNativeSmoothnessReference();
     testPreparationKeepsLearnedLead();
     testGpuReadinessLeadIsSeparateFromTarget();
+    testGpuReadinessPercentileExpiresDuplicateSamples();
     testDeferredGpuObservationDoesNotCreateBufferPressure();
     testSmoothnessFeedback();
     testRefreshReferencesAreNotDisplayEvents();

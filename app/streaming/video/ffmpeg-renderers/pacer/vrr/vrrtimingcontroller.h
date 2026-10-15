@@ -724,6 +724,7 @@ private:
         uint64_t waitUs = 0;
     };
     std::deque<GpuReadinessSample> m_GpuReadinessSamples;
+    std::vector<uint64_t> m_GpuReadinessSortedWaits;
     uint64_t m_LastGpuReadinessUpdateUs = 0;
     bool m_CanLatchPresentation = true;
     bool m_LatchedPresentation = false;
