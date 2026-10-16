@@ -1,5 +1,6 @@
 #pragma once
 #include "reserve.h"
+#include "jsoninteger.h"
 #include <QJsonArray>
 #include <QJsonDocument>
 
@@ -22,7 +23,7 @@ inline bool decodeVrrPlayoutProfile(const QByteArray& encoded, std::vector<int64
     if (!doc.isArray() || doc.array().size() != int(Vrr13::Reserve::ProfileWords)) return false;
     words.clear();
     for (const auto& value : doc.array()) {
-        const auto integer = value.toInteger(-1);
+        const auto integer = Vrr13::jsonInteger(value, -1);
         if (!value.isDouble() || value.toDouble() != double(integer)) return false;
         words.push_back(integer);
     }

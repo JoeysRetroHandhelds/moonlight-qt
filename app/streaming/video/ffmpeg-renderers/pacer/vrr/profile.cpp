@@ -1,4 +1,5 @@
 #include "profile.h"
+#include "jsoninteger.h"
 #include <QDateTime>
 #include <QDir>
 #include <QFile>
@@ -24,13 +25,13 @@ bool loadProfile(const QString& path, const QString& key, Reserve& reserve)
 {
     if (key.isEmpty()) return false;
     auto entry = read(path).value(key).toObject();
-    const auto age = QDateTime::currentSecsSinceEpoch() - entry.value("updated").toInteger();
+    const auto age = QDateTime::currentSecsSinceEpoch() - jsonInteger(entry.value("updated"));
     if (age < 0 || age > 14 * 86400) return false;
     const auto values = entry.value("weights").toArray();
     std::vector<int64_t> words;
     for (const auto& value : values) {
-        if (!value.isDouble() || value.toDouble() != double(value.toInteger(-1))) return false;
-        words.push_back(value.toInteger(-1));
+        if (!value.isDouble() || value.toDouble() != double(jsonInteger(value, -1))) return false;
+        words.push_back(jsonInteger(value, -1));
     }
     Reserve restored(reserve.version());
     if (!restored.loadProfile(words)) return false;
@@ -48,10 +49,10 @@ bool saveProfile(const QString& path, const QString& key, const Reserve& reserve
     auto profiles = read(path);
     const auto now = QDateTime::currentSecsSinceEpoch();
     const auto oldEntry = profiles.value(key).toObject();
-    const auto previous = oldEntry.value("updated").toInteger();
+    const auto previous = jsonInteger(oldEntry.value("updated"));
     if (previous > 0 && now >= previous && now - previous < 60) return false;
     for (const auto& name : profiles.keys()) {
-        const auto age = now - profiles.value(name).toObject().value("updated").toInteger();
+        const auto age = now - jsonInteger(profiles.value(name).toObject().value("updated"));
         if (age < 0 || age > 14 * 86400) profiles.remove(name);
     }
     profiles.remove(key);
@@ -59,7 +60,7 @@ bool saveProfile(const QString& path, const QString& key, const Reserve& reserve
         QString oldest;
         qint64 oldestTime = now + 1;
         for (auto i = profiles.begin(); i != profiles.end(); ++i) {
-            const auto time = i.value().toObject().value("updated").toInteger();
+            const auto time = jsonInteger(i.value().toObject().value("updated"));
             if (time < oldestTime) { oldestTime = time; oldest = i.key(); }
         }
         if (oldest.isEmpty()) return false;
@@ -74,8 +75,8 @@ bool saveProfile(const QString& path, const QString& key, const Reserve& reserve
     std::vector<int64_t> oldWords;
     bool integral = true;
     for (const auto& v : oldEntry.value("weights").toArray()) {
-        integral = integral && v.isDouble() && v.toDouble() == double(v.toInteger(-1));
-        oldWords.push_back(v.toInteger(-1));
+        integral = integral && v.isDouble() && v.toDouble() == double(jsonInteger(v, -1));
+        oldWords.push_back(jsonInteger(v, -1));
     }
     const bool oldValid = integral && previous > 0 && now >= previous && now - previous < 86400 &&
         old.loadProfile(oldWords);
@@ -110,9 +111,9 @@ uint64_t loadStartDelay(const QString& path, const QString& key)
 {
     if (key.isEmpty()) return 0;
     const auto entry = readStartDelays(path).value(key).toObject();
-    const auto age = QDateTime::currentSecsSinceEpoch() - entry.value("updated").toInteger();
+    const auto age = QDateTime::currentSecsSinceEpoch() - jsonInteger(entry.value("updated"));
     if (age < 0 || age > 14 * 86400) return 0;
-    const auto delay = entry.value("delay_us").toInteger(0);
+    const auto delay = jsonInteger(entry.value("delay_us"));
     return delay > 0 && delay <= 1000000 ? uint64_t(delay) : 0;
 }
 
@@ -125,7 +126,7 @@ bool saveStartDelay(const QString& path, const QString& key, uint64_t delayUs)
     auto entries = readStartDelays(path);
     const auto now = QDateTime::currentSecsSinceEpoch();
     for (const auto& name : entries.keys()) {
-        const auto age = now - entries.value(name).toObject().value("updated").toInteger();
+        const auto age = now - jsonInteger(entries.value(name).toObject().value("updated"));
         if (age < 0 || age > 14 * 86400) entries.remove(name);
     }
     entries.remove(key);
@@ -133,7 +134,7 @@ bool saveStartDelay(const QString& path, const QString& key, uint64_t delayUs)
         QString oldest;
         qint64 oldestTime = now + 1;
         for (auto i = entries.begin(); i != entries.end(); ++i) {
-            const auto time = i.value().toObject().value("updated").toInteger();
+            const auto time = jsonInteger(i.value().toObject().value("updated"));
             if (time < oldestTime) { oldestTime = time; oldest = i.key(); }
         }
         if (oldest.isEmpty()) return false;
