@@ -1954,10 +1954,14 @@ bool Session::startConnectionAsync()
     // PyroWave partial frames: let the receive thread release a frame that
     // lost optional detail by its VRR slot instead of after a fixed silence.
     // Nothing is published unless the VRR pacer runs timestamp playout.
+#ifdef HAVE_FFMPEG
     VrrReceiveDeadline::clear();
     LiSetVideoReassemblyDeadlineCallback([](uint32_t rtpTimestamp) {
         return VrrReceiveDeadline::deadlineUs(rtpTimestamp, LiGetMicroseconds());
     });
+#else
+    LiSetVideoReassemblyDeadlineCallback(nullptr);
+#endif
 
     if (m_StreamConfig.supportedVideoFormats & VIDEO_FORMAT_MASK_PYROWAVE) {
         m_StreamConfig.pyrowaveLinkMbps = NetworkBuffers::routedWiredLinkMbps(
