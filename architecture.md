@@ -4390,21 +4390,38 @@ left two KWin states that composite every frame until something resets them:
 `streaming/kwinscanoutguard.cpp` runs on its own thread while a stream is
 active. Every 2 s while fullscreen it reads KWin's `activeEffects` over D-Bus
 and reloads a short animation effect active for 6 s, at most three times per
-effect. Every 10 s it reads KMS state with plain ioctls: an active connector
-with HDR metadata whose CRTC has no `GAMMA_LUT` is the shadow-buffer fallback.
-The guard then re-applies that output's current SDR brightness through
-`kde_output_management_v2`. Any applied configuration makes KWin rerun
-`tryKmsColorOffloading()`, with no visible change. Outputs set to prefer color
-accuracy use the shadow buffer on purpose and are left alone; retries stop
-after three. Every action is logged with the prefix `KWin scanout guard:`.
+effect. KMS checks identify active HDR connectors with no CRTC `GAMMA_LUT`;
+that can indicate hardware-color fallback. Recovery requires two consistent
+fullscreen observations at least 2 s apart and consumes a single attempt per
+stream, including failures or uncertain replies. Intentional color-accuracy
+outputs are left alone. Unknown KMS state and output hotplug reset only the
+settling observation, never a consumed retry budget.
+
+Output discovery supports legacy `kde_output_device_v2` globals through
+version 16 and `kde_output_device_registry_v2` at version 21. Initial state
+must include `done`; removed outputs/modes, duplicate descriptions, stale
+state and configuration failures are handled without applying stale values.
+Registry-based KWin receives an output-configuration apply with no setting
+setters. Legacy KWin receives only the current SDR reference value, after a
+freshness check; no brightness nudge or mode/HDR/VRR/calibration setter is sent.
+Source-path fixtures for KWin 6.7.3 and 6.4.3 verify that an unchanged reference
+creates the change set and reaches `tryKmsColorOffloading()`. The 6.7.3 apply
+path adds current DPMS state even to an empty configuration. These fixtures
+verify the retry entry, not GPU acceptance. A live KWin 6.7.3 test restored a
+nonzero CRTC gamma LUT at the unchanged 300-nit reference; the user confirmed
+correct color and no flicker. The remaining present-timing issue was not
+resolved. Hardware gamma offload alone does not establish direct scanout or
+correct display cadence. An accepted configuration is logged separately from
+the later KMS result.
 
 The guard links neither libwayland-client nor libdrm (the AppImage disables
-both). It loads libwayland-client at runtime, and every compositor wait has a
-2 s deadline so the end of a stream never blocks on it. The Flatpak needs
-`--talk-name=org.kde.KWin` for the effect check. The KMS check and the HDR
-retry use only the Wayland socket and `/dev/dri`. `MOONLIGHT_KWIN_SCANOUT_GUARD=0`
-disables the guard, and `tests/vrr/tst_kwinscanoutguard` exercises it against a
-fake KWin.
+both). It loads libwayland-client at runtime. A single 2 s deadline covers the
+whole short-lived output-management operation, including enumeration,
+freshness and reply waits. The Flatpak needs `--talk-name=org.kde.KWin` for the
+effect check. The KMS check and HDR retry use the Wayland socket and `/dev/dri`.
+`MOONLIGHT_KWIN_SCANOUT_GUARD=0` disables the guard. The isolated
+`tests/vrr/tst_kwinscanoutguard` fixture checks registry/legacy requests,
+unchanged settings, hotplug, timeouts and the one-attempt policy under sanitizers.
 
 ## 12. Audio, input, and end-to-end latency
 

@@ -25,9 +25,9 @@
 //    output setting changes.
 //
 // While a stream runs, this guard reloads such a stuck effect over D-Bus and
-// makes KWin retry its color offloading by re-applying an HDR output's current
-// SDR brightness through kde_output_management_v2. It acts only on those exact
-// states, at most a few times per stream, and logs every action.
+// asks KWin to apply its current output configuration (legacy KWin receives
+// only its unchanged SDR reference value). Recovery needs two stable fullscreen fallback observations
+// and is attempted at most once per stream. Every action is logged.
 //
 // Everything here works in the Flatpak (wayland socket, /dev/dri, and
 // --talk-name=org.kde.KWin) and the AppImage, which links neither
@@ -80,18 +80,37 @@ public:
 
     struct HdrRetryResult {
         bool available = false; // KWin output management was reachable.
-        QStringList retried;    // Outputs whose SDR brightness was re-applied.
+        QStringList retried;    // Outputs named by an accepted unchanged apply.
         QStringList skipped;    // Outputs left alone, with the reason.
         bool applied = false;
         QString failure;
     };
-    // Re-applies the current SDR brightness of each enabled HDR output that
-    // prefers efficiency, which makes KWin rerun its KMS color offloading.
+    // Requests an unchanged output-configuration apply, after checking the
+    // named enabled HDR outputs prefer efficiency. Registry-based KWin needs
+    // no setting setters; legacy KWin receives only the current SDR reference.
+    // Acceptance is not proof that hardware color offload recovered.
     // An empty outputs list means every output. connectedFd (taken over) is
     // for tests; -1 connects to WAYLAND_DISPLAY.
     static HdrRetryResult retryHdrColorOffload(const QStringList& outputs = {}, int connectedFd = -1);
 
+    class HdrRecovery
+    {
+    public:
+        using Clock = std::chrono::steady_clock;
+        static constexpr std::chrono::seconds k_StableFor{2};
+        // An issued attempt consumes the stream budget even if KWin rejects
+        // it or the reply is lost. Healthy/unknown/hotplug/windowed states
+        // cannot start a repeated configuration-apply loop.
+        QStringList update(Clock::time_point now, HdrOffload state, QStringList outputs, bool fullscreen);
+        bool attempted() const { return m_Attempted; }
+    private:
+        QStringList m_Pending;
+        Clock::time_point m_FirstSeen{};
+        bool m_Attempted = false;
+    };
+
 private:
+    static HdrOffload probeHdrOffload(QStringList* shadowOutputs, QStringList* activeHdrOutputs);
     explicit KWinScanoutGuard(bool fullscreen);
     void run();
     bool waitFor(std::chrono::steady_clock::duration duration);

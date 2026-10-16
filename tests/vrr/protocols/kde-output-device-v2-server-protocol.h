@@ -17,6 +17,7 @@ struct wl_resource;
 /**
  * @page page_kde_output_device_v2 The kde_output_device_v2 protocol
  * @section page_ifaces_kde_output_device_v2 Interfaces
+ * - @subpage page_iface_kde_output_device_registry_v2 - output devices
  * - @subpage page_iface_kde_output_device_v2 - output configuration representation
  * - @subpage page_iface_kde_output_device_mode_v2 - output mode
  * @section page_copyright_kde_output_device_v2 Copyright
@@ -32,8 +33,32 @@ struct wl_resource;
  * </pre>
  */
 struct kde_output_device_mode_v2;
+struct kde_output_device_registry_v2;
 struct kde_output_device_v2;
 
+#ifndef KDE_OUTPUT_DEVICE_REGISTRY_V2_INTERFACE
+#define KDE_OUTPUT_DEVICE_REGISTRY_V2_INTERFACE
+/**
+ * @page page_iface_kde_output_device_registry_v2 kde_output_device_registry_v2
+ * @section page_iface_kde_output_device_registry_v2_desc Description
+ *
+ * This interface can be used to list output devices.
+ *
+ * If this global is bound with a version less than 21, the unsupported_version
+ * protocol error will be posted.
+ * @section page_iface_kde_output_device_registry_v2_api API
+ * See @ref iface_kde_output_device_registry_v2.
+ */
+/**
+ * @defgroup iface_kde_output_device_registry_v2 The kde_output_device_registry_v2 interface
+ *
+ * This interface can be used to list output devices.
+ *
+ * If this global is bound with a version less than 21, the unsupported_version
+ * protocol error will be posted.
+ */
+extern const struct wl_interface kde_output_device_registry_v2_interface;
+#endif
 #ifndef KDE_OUTPUT_DEVICE_V2_INTERFACE
 #define KDE_OUTPUT_DEVICE_V2_INTERFACE
 /**
@@ -122,6 +147,101 @@ extern const struct wl_interface kde_output_device_v2_interface;
  */
 extern const struct wl_interface kde_output_device_mode_v2_interface;
 #endif
+
+#ifndef KDE_OUTPUT_DEVICE_REGISTRY_V2_ERROR_ENUM
+#define KDE_OUTPUT_DEVICE_REGISTRY_V2_ERROR_ENUM
+/**
+ * @ingroup iface_kde_output_device_registry_v2
+ * kde_output_device_registry_v2 error values
+ *
+ * These errors can be emitted in response to some requests.
+ */
+enum kde_output_device_registry_v2_error {
+	/**
+	 * the registry was bound with an unsupported version
+	 */
+	KDE_OUTPUT_DEVICE_REGISTRY_V2_ERROR_UNSUPPORTED_VERSION = 0,
+};
+#endif /* KDE_OUTPUT_DEVICE_REGISTRY_V2_ERROR_ENUM */
+
+#ifndef KDE_OUTPUT_DEVICE_REGISTRY_V2_ERROR_ENUM_IS_VALID
+#define KDE_OUTPUT_DEVICE_REGISTRY_V2_ERROR_ENUM_IS_VALID
+/**
+ * @ingroup iface_kde_output_device_registry_v2
+ * Validate a kde_output_device_registry_v2 error value.
+ *
+ * @return true on success, false on error.
+ * @ref kde_output_device_registry_v2_error
+ */
+static inline bool
+kde_output_device_registry_v2_error_is_valid(uint32_t value, uint32_t version) {
+	switch (value) {
+	case KDE_OUTPUT_DEVICE_REGISTRY_V2_ERROR_UNSUPPORTED_VERSION:
+		return version >= 1;
+	default:
+		return false;
+	}
+}
+#endif /* KDE_OUTPUT_DEVICE_REGISTRY_V2_ERROR_ENUM_IS_VALID */
+
+/**
+ * @ingroup iface_kde_output_device_registry_v2
+ * @struct kde_output_device_registry_v2_interface
+ */
+struct kde_output_device_registry_v2_interface {
+	/**
+	 * stop receiving updates
+	 *
+	 * This request indicates that the client no longer wants to
+	 * receive new output announcements. The compositor will send the
+	 * kde_output_device_registry_v2.finished event in response to this
+	 * request. The compositor may still send new output announcements
+	 * after calling this request until the
+	 * kde_output_device_registry_v2.finished event is sent.
+	 * @since 21
+	 */
+	void (*stop)(struct wl_client *client,
+		     struct wl_resource *resource);
+};
+
+#define KDE_OUTPUT_DEVICE_REGISTRY_V2_FINISHED 0
+#define KDE_OUTPUT_DEVICE_REGISTRY_V2_OUTPUT 1
+
+/**
+ * @ingroup iface_kde_output_device_registry_v2
+ */
+#define KDE_OUTPUT_DEVICE_REGISTRY_V2_FINISHED_SINCE_VERSION 21
+/**
+ * @ingroup iface_kde_output_device_registry_v2
+ */
+#define KDE_OUTPUT_DEVICE_REGISTRY_V2_OUTPUT_SINCE_VERSION 21
+
+/**
+ * @ingroup iface_kde_output_device_registry_v2
+ */
+#define KDE_OUTPUT_DEVICE_REGISTRY_V2_STOP_SINCE_VERSION 21
+
+/**
+ * @ingroup iface_kde_output_device_registry_v2
+ * Sends an finished event to the client owning the resource.
+ * @param resource_ The client's resource
+ */
+static inline void
+kde_output_device_registry_v2_send_finished(struct wl_resource *resource_)
+{
+	wl_resource_post_event(resource_, KDE_OUTPUT_DEVICE_REGISTRY_V2_FINISHED);
+}
+
+/**
+ * @ingroup iface_kde_output_device_registry_v2
+ * Sends an output event to the client owning the resource.
+ * @param resource_ The client's resource
+ */
+static inline void
+kde_output_device_registry_v2_send_output(struct wl_resource *resource_, struct wl_resource *output)
+{
+	wl_resource_post_event(resource_, KDE_OUTPUT_DEVICE_REGISTRY_V2_OUTPUT, output);
+}
 
 #ifndef KDE_OUTPUT_DEVICE_V2_SUBPIXEL_ENUM
 #define KDE_OUTPUT_DEVICE_V2_SUBPIXEL_ENUM
@@ -301,6 +421,30 @@ enum kde_output_device_v2_capability {
 	 * @since 16
 	 */
 	KDE_OUTPUT_DEVICE_V2_CAPABILITY_EDR = 0x800,
+	/**
+	 * if this outputdevice supports the sharpness setting
+	 * @since 17
+	 */
+	KDE_OUTPUT_DEVICE_V2_CAPABILITY_SHARPNESS = 0x1000,
+	/**
+	 * if this outputdevice supports custom modes
+	 * @since 18
+	 */
+	KDE_OUTPUT_DEVICE_V2_CAPABILITY_CUSTOM_MODES = 0x2000,
+	/**
+	 * @since 19
+	 */
+	KDE_OUTPUT_DEVICE_V2_CAPABILITY_AUTO_BRIGHTNESS = 0x4000,
+	/**
+	 * if this outputdevice supports HDR ICC profiles
+	 * @since 22
+	 */
+	KDE_OUTPUT_DEVICE_V2_CAPABILITY_HDR_ICC_PROFILE = 0x8000,
+	/**
+	 * if this outputdevice supports the abm level setting
+	 * @since 23
+	 */
+	KDE_OUTPUT_DEVICE_V2_CAPABILITY_ABM_LEVEL = 0x10000,
 };
 /**
  * @ingroup iface_kde_output_device_v2
@@ -338,6 +482,26 @@ enum kde_output_device_v2_capability {
  * @ingroup iface_kde_output_device_v2
  */
 #define KDE_OUTPUT_DEVICE_V2_CAPABILITY_EDR_SINCE_VERSION 16
+/**
+ * @ingroup iface_kde_output_device_v2
+ */
+#define KDE_OUTPUT_DEVICE_V2_CAPABILITY_SHARPNESS_SINCE_VERSION 17
+/**
+ * @ingroup iface_kde_output_device_v2
+ */
+#define KDE_OUTPUT_DEVICE_V2_CAPABILITY_CUSTOM_MODES_SINCE_VERSION 18
+/**
+ * @ingroup iface_kde_output_device_v2
+ */
+#define KDE_OUTPUT_DEVICE_V2_CAPABILITY_AUTO_BRIGHTNESS_SINCE_VERSION 19
+/**
+ * @ingroup iface_kde_output_device_v2
+ */
+#define KDE_OUTPUT_DEVICE_V2_CAPABILITY_HDR_ICC_PROFILE_SINCE_VERSION 22
+/**
+ * @ingroup iface_kde_output_device_v2
+ */
+#define KDE_OUTPUT_DEVICE_V2_CAPABILITY_ABM_LEVEL_SINCE_VERSION 23
 #endif /* KDE_OUTPUT_DEVICE_V2_CAPABILITY_ENUM */
 
 #ifndef KDE_OUTPUT_DEVICE_V2_CAPABILITY_ENUM_IS_VALID
@@ -376,6 +540,16 @@ kde_output_device_v2_capability_is_valid(uint32_t value, uint32_t version) {
 		valid |= KDE_OUTPUT_DEVICE_V2_CAPABILITY_MAX_BITS_PER_COLOR;
 	if (version >= 16)
 		valid |= KDE_OUTPUT_DEVICE_V2_CAPABILITY_EDR;
+	if (version >= 17)
+		valid |= KDE_OUTPUT_DEVICE_V2_CAPABILITY_SHARPNESS;
+	if (version >= 18)
+		valid |= KDE_OUTPUT_DEVICE_V2_CAPABILITY_CUSTOM_MODES;
+	if (version >= 19)
+		valid |= KDE_OUTPUT_DEVICE_V2_CAPABILITY_AUTO_BRIGHTNESS;
+	if (version >= 22)
+		valid |= KDE_OUTPUT_DEVICE_V2_CAPABILITY_HDR_ICC_PROFILE;
+	if (version >= 23)
+		valid |= KDE_OUTPUT_DEVICE_V2_CAPABILITY_ABM_LEVEL;
 	return (value & ~valid) == 0;
 }
 #endif /* KDE_OUTPUT_DEVICE_V2_CAPABILITY_ENUM_IS_VALID */
@@ -611,6 +785,22 @@ kde_output_device_v2_edr_policy_is_valid(uint32_t value, uint32_t version) {
 }
 #endif /* KDE_OUTPUT_DEVICE_V2_EDR_POLICY_ENUM_IS_VALID */
 
+/**
+ * @ingroup iface_kde_output_device_v2
+ * @struct kde_output_device_v2_interface
+ */
+struct kde_output_device_v2_interface {
+	/**
+	 * destroy the output device
+	 *
+	 * This notifies the compositor that the client no longer wishes
+	 * to use the kde_output_device_v2 object.
+	 * @since 21
+	 */
+	void (*release)(struct wl_client *client,
+			struct wl_resource *resource);
+};
+
 #define KDE_OUTPUT_DEVICE_V2_GEOMETRY 0
 #define KDE_OUTPUT_DEVICE_V2_CURRENT_MODE 1
 #define KDE_OUTPUT_DEVICE_V2_MODE 2
@@ -644,6 +834,13 @@ kde_output_device_v2_edr_policy_is_valid(uint32_t value, uint32_t version) {
 #define KDE_OUTPUT_DEVICE_V2_MAX_BITS_PER_COLOR_RANGE 30
 #define KDE_OUTPUT_DEVICE_V2_AUTOMATIC_MAX_BITS_PER_COLOR_LIMIT 31
 #define KDE_OUTPUT_DEVICE_V2_EDR_POLICY 32
+#define KDE_OUTPUT_DEVICE_V2_SHARPNESS 33
+#define KDE_OUTPUT_DEVICE_V2_PRIORITY 34
+#define KDE_OUTPUT_DEVICE_V2_AUTO_BRIGHTNESS 35
+#define KDE_OUTPUT_DEVICE_V2_REMOVED 36
+#define KDE_OUTPUT_DEVICE_V2_HDR_ICC_PROFILE_PATH 37
+#define KDE_OUTPUT_DEVICE_V2_HDR_COLOR_PROFILE_SOURCE 38
+#define KDE_OUTPUT_DEVICE_V2_ABM_LEVEL 39
 
 /**
  * @ingroup iface_kde_output_device_v2
@@ -777,7 +974,39 @@ kde_output_device_v2_edr_policy_is_valid(uint32_t value, uint32_t version) {
  * @ingroup iface_kde_output_device_v2
  */
 #define KDE_OUTPUT_DEVICE_V2_EDR_POLICY_SINCE_VERSION 16
+/**
+ * @ingroup iface_kde_output_device_v2
+ */
+#define KDE_OUTPUT_DEVICE_V2_SHARPNESS_SINCE_VERSION 17
+/**
+ * @ingroup iface_kde_output_device_v2
+ */
+#define KDE_OUTPUT_DEVICE_V2_PRIORITY_SINCE_VERSION 18
+/**
+ * @ingroup iface_kde_output_device_v2
+ */
+#define KDE_OUTPUT_DEVICE_V2_AUTO_BRIGHTNESS_SINCE_VERSION 20
+/**
+ * @ingroup iface_kde_output_device_v2
+ */
+#define KDE_OUTPUT_DEVICE_V2_REMOVED_SINCE_VERSION 21
+/**
+ * @ingroup iface_kde_output_device_v2
+ */
+#define KDE_OUTPUT_DEVICE_V2_HDR_ICC_PROFILE_PATH_SINCE_VERSION 22
+/**
+ * @ingroup iface_kde_output_device_v2
+ */
+#define KDE_OUTPUT_DEVICE_V2_HDR_COLOR_PROFILE_SOURCE_SINCE_VERSION 22
+/**
+ * @ingroup iface_kde_output_device_v2
+ */
+#define KDE_OUTPUT_DEVICE_V2_ABM_LEVEL_SINCE_VERSION 23
 
+/**
+ * @ingroup iface_kde_output_device_v2
+ */
+#define KDE_OUTPUT_DEVICE_V2_RELEASE_SINCE_VERSION 21
 
 /**
  * @ingroup iface_kde_output_device_v2
@@ -1174,10 +1403,126 @@ kde_output_device_v2_send_edr_policy(struct wl_resource *resource_, uint32_t pol
 	wl_resource_post_event(resource_, KDE_OUTPUT_DEVICE_V2_EDR_POLICY, policy);
 }
 
+/**
+ * @ingroup iface_kde_output_device_v2
+ * Sends an sharpness event to the client owning the resource.
+ * @param resource_ The client's resource
+ * @param sharpness sharpness in 0-10000
+ */
+static inline void
+kde_output_device_v2_send_sharpness(struct wl_resource *resource_, uint32_t sharpness)
+{
+	wl_resource_post_event(resource_, KDE_OUTPUT_DEVICE_V2_SHARPNESS, sharpness);
+}
+
+/**
+ * @ingroup iface_kde_output_device_v2
+ * Sends an priority event to the client owning the resource.
+ * @param resource_ The client's resource
+ * @param priority priority
+ */
+static inline void
+kde_output_device_v2_send_priority(struct wl_resource *resource_, uint32_t priority)
+{
+	wl_resource_post_event(resource_, KDE_OUTPUT_DEVICE_V2_PRIORITY, priority);
+}
+
+/**
+ * @ingroup iface_kde_output_device_v2
+ * Sends an auto_brightness event to the client owning the resource.
+ * @param resource_ The client's resource
+ * @param enabled 1 for enabled, 0 for disabled
+ */
+static inline void
+kde_output_device_v2_send_auto_brightness(struct wl_resource *resource_, uint32_t enabled)
+{
+	wl_resource_post_event(resource_, KDE_OUTPUT_DEVICE_V2_AUTO_BRIGHTNESS, enabled);
+}
+
+/**
+ * @ingroup iface_kde_output_device_v2
+ * Sends an removed event to the client owning the resource.
+ * @param resource_ The client's resource
+ */
+static inline void
+kde_output_device_v2_send_removed(struct wl_resource *resource_)
+{
+	wl_resource_post_event(resource_, KDE_OUTPUT_DEVICE_V2_REMOVED);
+}
+
+/**
+ * @ingroup iface_kde_output_device_v2
+ * Sends an hdr_icc_profile_path event to the client owning the resource.
+ * @param resource_ The client's resource
+ */
+static inline void
+kde_output_device_v2_send_hdr_icc_profile_path(struct wl_resource *resource_, const char *profile_path)
+{
+	wl_resource_post_event(resource_, KDE_OUTPUT_DEVICE_V2_HDR_ICC_PROFILE_PATH, profile_path);
+}
+
+/**
+ * @ingroup iface_kde_output_device_v2
+ * Sends an hdr_color_profile_source event to the client owning the resource.
+ * @param resource_ The client's resource
+ */
+static inline void
+kde_output_device_v2_send_hdr_color_profile_source(struct wl_resource *resource_, uint32_t source)
+{
+	wl_resource_post_event(resource_, KDE_OUTPUT_DEVICE_V2_HDR_COLOR_PROFILE_SOURCE, source);
+}
+
+/**
+ * @ingroup iface_kde_output_device_v2
+ * Sends an abm_level event to the client owning the resource.
+ * @param resource_ The client's resource
+ * @param level 0 is off, 4 is the maximum level
+ */
+static inline void
+kde_output_device_v2_send_abm_level(struct wl_resource *resource_, uint32_t level)
+{
+	wl_resource_post_event(resource_, KDE_OUTPUT_DEVICE_V2_ABM_LEVEL, level);
+}
+
+#ifndef KDE_OUTPUT_DEVICE_MODE_V2_FLAGS_ENUM
+#define KDE_OUTPUT_DEVICE_MODE_V2_FLAGS_ENUM
+/**
+ * @ingroup iface_kde_output_device_mode_v2
+ * mode flags
+ */
+enum kde_output_device_mode_v2_flags {
+	KDE_OUTPUT_DEVICE_MODE_V2_FLAGS_CUSTOM = 0x1,
+	KDE_OUTPUT_DEVICE_MODE_V2_FLAGS_REDUCED_BLANKING = 0x2,
+};
+#endif /* KDE_OUTPUT_DEVICE_MODE_V2_FLAGS_ENUM */
+
+#ifndef KDE_OUTPUT_DEVICE_MODE_V2_FLAGS_ENUM_IS_VALID
+#define KDE_OUTPUT_DEVICE_MODE_V2_FLAGS_ENUM_IS_VALID
+/**
+ * @ingroup iface_kde_output_device_mode_v2
+ * Validate a kde_output_device_mode_v2 flags value.
+ *
+ * @return true on success, false on error.
+ * @ref kde_output_device_mode_v2_flags
+ */
+static inline bool
+kde_output_device_mode_v2_flags_is_valid(uint32_t value, uint32_t version) {
+	switch (value) {
+	case KDE_OUTPUT_DEVICE_MODE_V2_FLAGS_CUSTOM:
+		return version >= 1;
+	case KDE_OUTPUT_DEVICE_MODE_V2_FLAGS_REDUCED_BLANKING:
+		return version >= 1;
+	default:
+		return false;
+	}
+}
+#endif /* KDE_OUTPUT_DEVICE_MODE_V2_FLAGS_ENUM_IS_VALID */
+
 #define KDE_OUTPUT_DEVICE_MODE_V2_SIZE 0
 #define KDE_OUTPUT_DEVICE_MODE_V2_REFRESH 1
 #define KDE_OUTPUT_DEVICE_MODE_V2_PREFERRED 2
 #define KDE_OUTPUT_DEVICE_MODE_V2_REMOVED 3
+#define KDE_OUTPUT_DEVICE_MODE_V2_FLAGS 4
 
 /**
  * @ingroup iface_kde_output_device_mode_v2
@@ -1195,6 +1540,10 @@ kde_output_device_v2_send_edr_policy(struct wl_resource *resource_, uint32_t pol
  * @ingroup iface_kde_output_device_mode_v2
  */
 #define KDE_OUTPUT_DEVICE_MODE_V2_REMOVED_SINCE_VERSION 1
+/**
+ * @ingroup iface_kde_output_device_mode_v2
+ */
+#define KDE_OUTPUT_DEVICE_MODE_V2_FLAGS_SINCE_VERSION 19
 
 
 /**
@@ -1242,6 +1591,17 @@ static inline void
 kde_output_device_mode_v2_send_removed(struct wl_resource *resource_)
 {
 	wl_resource_post_event(resource_, KDE_OUTPUT_DEVICE_MODE_V2_REMOVED);
+}
+
+/**
+ * @ingroup iface_kde_output_device_mode_v2
+ * Sends an flags event to the client owning the resource.
+ * @param resource_ The client's resource
+ */
+static inline void
+kde_output_device_mode_v2_send_flags(struct wl_resource *resource_, uint32_t flags)
+{
+	wl_resource_post_event(resource_, KDE_OUTPUT_DEVICE_MODE_V2_FLAGS, flags);
 }
 
 #ifdef  __cplusplus
