@@ -29,6 +29,9 @@ class VrrTimingController;
 // unpaced Pacer behavior never enter it.
 class VrrPacingWorker {
 public:
+    // Resolve the same production policy for cache identity and worker startup.
+    static VrrSessionConfig resolvedInputConfig(VrrSessionConfig config);
+
     VrrPacingWorker(IVrrFramePresenter* presenter,
                     const VrrSessionConfig& config,
                     PacerTelemetry* telemetry);

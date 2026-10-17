@@ -29,7 +29,7 @@ namespace {
 // MOONLIGHT_VRR_EXPERIMENTAL_ADAPTIVE_BUFFER=0 restores the previous
 // revision-12 buffer, and MOONLIGHT_VRR_BOUNDED_CATCHUP=0 disables catch-up and
 // the normalized producer clock while keeping the adaptive buffer.
-VrrSessionConfig experimentalInputConfig(VrrSessionConfig config)
+VrrSessionConfig experimentalInputConfig(VrrSessionConfig config, bool logConfiguration = true)
 {
     const auto mode = qEnvironmentVariable("MOONLIGHT_VRR_EXPERIMENTAL_ADAPTIVE_BUFFER");
     if (mode == "0") return config;
@@ -41,7 +41,7 @@ VrrSessionConfig experimentalInputConfig(VrrSessionConfig config)
         uint64_t(config.timingOptions.resolved(config.latencyMode).targetHundredths) * 100;
     config.experimentalInputPercentileWindowUs =
         uint64_t(config.timingOptions.resolved(config.latencyMode).historySeconds) * 1000000;
-    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+    if (logConfiguration) SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
         "Adaptive buffer: profile smoothness %.2f%% selects input readiness percentile; history %llu s, rise %llu us/s, stable learned input target with 250 us/s release; layers at least 30 FPS apart, upward restore or normal downward drain; fixed 2T Absorb pad (input policy 10); interval severity score remains distinct",
         config.experimentalInputPercentilePpm / 10000.0,
         static_cast<unsigned long long>(config.experimentalInputPercentileWindowUs / 1000000),
@@ -199,6 +199,11 @@ bool isUncPath(const QString& path)
 #endif
 
 } // namespace
+
+VrrSessionConfig VrrPacingWorker::resolvedInputConfig(VrrSessionConfig config)
+{
+    return experimentalInputConfig(std::move(config), false);
+}
 
 VrrPacingWorker::VrrPacingWorker(IVrrFramePresenter* presenter,
                                  const VrrSessionConfig& config,

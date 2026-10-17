@@ -110,3 +110,7 @@ inputaccounting.file = $$PWD/inputaccounting.pro
 
 receivedriftclock.file = $$PWD/receivedriftclock.pro
 SUBDIRS += receivedriftclock
+
+# Effective production policy must select the matching cache namespace.
+vrrcacheidentity.file = $$PWD/vrrcacheidentity.pro
+SUBDIRS += vrrcacheidentity

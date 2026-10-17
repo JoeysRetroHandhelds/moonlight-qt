@@ -1,4 +1,4 @@
-## Candidate receive-clock correction (review pending, not installed)
+## Receive-clock correction (2026-10-17)
 
 New sessions select input clock-relative history revision4. Revisions0--3 keep
 historical replay semantics. The drift observer fits packet-receive/RTP offsets,
@@ -10,7 +10,11 @@ resetting buffer evidence or accumulated clock coordinates; it retains the last
 qualified oscillator slope while reacquiring. Clock qualification is independent
 of cached FPS layer selection. Invalid packets do not become evidence and an
 unrefreshed slope expires after120s. Calibration identity includes clock revision.
-Native build/replay and independent UltraCode review are required before use.
+Cache identity resolves the same effective adaptive session options as the worker
+before constructing policy tags, so new clock sessions cannot share an older
+clock policy's startup-delay namespace. The configured goal/window remain learning
+objectives; native synthetic tests can still contain below-target windows. Native
+correctness evidence and target attainment must be reported separately.
 
 Buffer quality observability (2026-10-17, accepted base `75e97d26`):
 the CPU optimization and eligible-age/fresh-reacquisition correction are now
