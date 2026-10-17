@@ -18,6 +18,9 @@ enum class TimingGraphDisplayKind { DisplayEvent, ConfirmedRefresh };
 struct TimingGraphInput {
     uint64_t submissionUs = 0, targetUs = 0, sourcePeriodUs = 0;
     uint64_t bufferUs = 0, requestedBufferUs = 0, toleranceUs = 0;
+    // Net positive smoothing/floor/recovery hold beyond bufferUs, as in stats.
+    // Observation only: never part of the stage allowance or miss threshold.
+    uint64_t extraDelayUs = 0;
     // Adaptive input coverage uses the controller's exact eligible observation,
     // not GPU readiness sampled after queueing. These are diagnostics only.
     int64_t producerRequiredUs = 0;
@@ -44,6 +47,9 @@ struct TimingGraphInput {
 struct TimingGraphPoint {
     uint64_t submissionUs = 0, targetUs = 0, targetIntervalUs = 0, submissionIntervalUs = 0;
     uint64_t sourcePeriodUs = 0, bufferUs = 0, requestedBufferUs = 0, toleranceUs = 0;
+    // Net positive smoothing/floor/recovery hold beyond bufferUs, as in stats.
+    // Observation only: never part of the stage allowance or miss threshold.
+    uint64_t extraDelayUs = 0;
     // Adaptive input coverage uses the controller's exact eligible observation,
     // not GPU readiness sampled after queueing. These are diagnostics only.
     int64_t producerRequiredUs = 0;
@@ -85,7 +91,7 @@ struct TimingGraphLayout {
     static constexpr int BufferLane = Lanes;
     static constexpr int Width = 800, Left = 76, RightMargin = 14;
     static constexpr int LaneTop = 32, LaneSpacing = 78, PlotOffset = 24, PlotHeight = 46;
-    static constexpr int Height = LaneTop + (Lanes + 1) * LaneSpacing + 178;
+    static constexpr int Height = LaneTop + (Lanes + 1) * LaneSpacing + 198;
     static constexpr double RadiusUs = 2000.0;
     // Deviations this small are not noticeable at typical VRR rates; they are
     // drawn on the reference line so only noticeable disturbances stand out.
@@ -260,7 +266,7 @@ public:
             p.submissionUs = in.submissionUs; p.targetUs = in.targetUs;
             p.preparationReadyUs = in.preparationReadyUs;
             p.sourcePeriodUs = in.sourcePeriodUs; p.bufferUs = in.bufferUs;
-            p.requestedBufferUs = in.requestedBufferUs;
+            p.requestedBufferUs = in.requestedBufferUs; p.extraDelayUs = in.extraDelayUs;
             p.producerRequiredUs = in.producerRequiredUs;
             p.producerEligible = in.producerEligible;
             p.inputPercentileEnabled = in.inputPercentileEnabled;

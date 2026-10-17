@@ -13,6 +13,12 @@ namespace PerformanceStats {
 struct Snapshot {
     bool vrr = false, adaptive = false, atLimit = false;
     uint64_t bufferUs = 0;
+    // Scheduled beyond the input buffer by cadence smoothing and late-frame
+    // recovery. Show it and the total separately from the input buffer so the
+    // value labeled "VRR buffer" matches the timing graph's Buffer line.
+    // Label the combined positive correction "extra delay": display-spacing
+    // and recovery holds can exceed the cadence smoother's tolerance budget.
+    uint64_t smoothingUs = 0;
     uint64_t targetPpm = 0, toleranceUs = 0;
     uint64_t nowUs = 0;
     Vrr13::InputPercentileBuffer::Stats input;
@@ -33,13 +39,15 @@ inline std::string formatVrr(const Snapshot& s)
 {
     if (!s.vrr) return "VRR pacing: inactive\n";
 
-    char buffer[96], coverage[96], present[128], text[384];
+    char buffer[96], coverage[96], present[128], text[512];
+    const double totalMs = (s.bufferUs + s.smoothingUs) / 1000.0;
     if (s.adaptive && s.input.samples)
-        std::snprintf(buffer, sizeof(buffer), "%.2f ms%s (target %.2f ms%s)",
-            s.bufferUs / 1000.0, s.atLimit ? " at limit" : "", s.input.targetUs / 1000.0,
-            s.input.tailUncertain ? " learning" : "");
+        std::snprintf(buffer, sizeof(buffer), "%.2f ms%s (target %.2f%s)",
+            s.bufferUs / 1000.0, s.atLimit ? " at limit" : "",
+            s.input.targetUs / 1000.0, s.input.tailUncertain ? " learning" : "");
     else
-        std::snprintf(buffer, sizeof(buffer), "%.2f ms%s", s.bufferUs / 1000.0, s.atLimit ? " at limit" : "");
+        std::snprintf(buffer, sizeof(buffer), "%.2f ms%s",
+            s.bufferUs / 1000.0, s.atLimit ? " at limit" : "");
 
     // Each current value shares a line with its target. Coverage counts clean
     // plus absorbed inputs over the profile history.
@@ -67,8 +75,9 @@ inline std::string formatVrr(const Snapshot& s)
 
     std::snprintf(text, sizeof(text),
         "VRR buffer: %s | %s\n"
+        "Extra delay: %.2f ms (smoothing/recovery) | Planned total: %.2f ms\n"
         "Present timing issues (30s): %s\n",
-        buffer, coverage, present);
+        buffer, coverage, s.smoothingUs / 1000.0, totalMs, present);
     return text;
 }
 }

@@ -42,10 +42,11 @@ VrrSessionConfig experimentalInputConfig(VrrSessionConfig config)
     config.experimentalInputPercentileWindowUs =
         uint64_t(config.timingOptions.resolved(config.latencyMode).historySeconds) * 1000000;
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-        "Adaptive buffer: profile smoothness %.2f%% selects input readiness percentile; history %llu s, rise %llu us/s, fall 250 us/s; interval severity score remains distinct",
+        "Adaptive buffer: profile smoothness %.2f%% selects input readiness percentile; history %llu s, rise %llu us/s, all adaptive buffer movement capped at tolerance/s; layers at least 30 FPS apart, upward restore or T/frame drain; fixed 2T Absorb pad (input policy 9); interval severity score remains distinct",
         config.experimentalInputPercentilePpm / 10000.0,
         static_cast<unsigned long long>(config.experimentalInputPercentileWindowUs / 1000000),
-        static_cast<unsigned long long>(config.experimentalInputPercentileRiseUsPerSecond));
+        static_cast<unsigned long long>(std::min<uint64_t>(config.experimentalInputPercentileRiseUsPerSecond,
+            config.timingOptions.resolved(config.latencyMode).toleranceUs)));
     return config;
 }
 
@@ -1029,6 +1030,7 @@ int VrrPacingWorker::run()
             sample.graph.targetUs = decision.targetUs;
             sample.graph.sourcePeriodUs = decision.sourcePeriodUs;
             sample.graph.bufferUs = decision.playoutDelayUs;
+            sample.graph.extraDelayUs = decision.plannedExtraDelayUs();
             sample.graph.requestedBufferUs = decision.requestedPlayoutDelayUs;
             const auto graphInterval = m_TimingController->intervalStats();
             const auto& input = graphInterval.inputPercentile;
@@ -1105,6 +1107,8 @@ int VrrPacingWorker::run()
                     positiveDifference(queuedFrame.trace.dequeueUs, stage.readyUs);
             }
             sample.bufferUs = decision.playoutDelayUs;
+            // Both overlays use the same frame's net positive correction.
+            sample.smoothingUs = sample.graph.extraDelayUs;
             sample.submissionUs = telemetry.submissionBoundaryUs;
             sample.motionDiscontinuity = decision.rebased || externalRebaseApplied;
             sample.decisionTimeUs = decisionTimeUs;
