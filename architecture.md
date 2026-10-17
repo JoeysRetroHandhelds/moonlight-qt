@@ -6143,3 +6143,23 @@ uniformly scales the complete surface only if it exceeds either bound, preservin
 all text/lanes and alpha without cropping; graph-only/already-fitting overlays
 keep their native size. The meaningful Deck/4K fit assertions remain mandatory.
 No GPU work or rasterization was moved into the streaming frame path.
+
+### Queue and budget display clarification (2026-10-17)
+
+The compact VRR overlay reports the measured decoder-output-to-Present-return
+interval once, with queue/pacing, GPU decode synchronization and CPU render/submit
+shown as included components. All four numbers use the same rendered-frame
+counter population and averaging window; dropped/cancelled work is excluded.
+GPU synchronization is recovered exactly as total minus queue minus rendering,
+using the existing bounded telemetry partition. Raw counters and pacing policy
+are unchanged. Render-start and target waits remain part of queue/pacing.
+
+The buffer and positive retiming correction remain explicitly scheduling budgets,
+with their combined budget marked “not added to measured times.” The applied
+budget is the latest decision, not the mean residence of rendered frames. There
+is no reliable causal buffer-wait partition: the trace contains the actual
+schedule, not a counterfactual schedule without buffering. In particular, a late
+frame can have queue time below the budget, and a zero-budget frame can still
+wait for physical presentation constraints. Subtracting the budget from queue
+would therefore discard measured time. OS presentation after CPU submission,
+scanout and pixel response are outside the measured total shown here.
