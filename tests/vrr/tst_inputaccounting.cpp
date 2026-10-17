@@ -16,7 +16,7 @@ void rateRoundTrip() {
  // Keep the recorded raw-input outcome definition in this clock/accounting
  // comparison. Actual preventable-hitch scoring is exercised independently by
  // tst_inputpercentileintegration, including the production rate-layer path.
- policy.playoutInputHitchMissesOnly=0;
+ policy.playoutInputHitchMissesOnly=0;policy.playoutInputStableAdaptation=0;
  VrrTimingController c(cfg,true,policy);uint64_t slot=1000000,pts=0,submitted=0,frame=0;
  const auto feed=[&](uint64_t count,uint64_t period,uint32_t ticks,uint64_t spike) {
   for(uint64_t n=0;n<count;++n,++frame) {
@@ -47,7 +47,7 @@ DriftRun driftRun(bool correct,double ppm,bool sparseEarly=false) {
  // Keep the recorded raw-input outcome definition in this clock/accounting
  // comparison. Actual preventable-hitch scoring is exercised independently by
  // tst_inputpercentileintegration, including the production rate-layer path.
- policy.playoutInputHitchMissesOnly=0;
+ policy.playoutInputHitchMissesOnly=0;policy.playoutInputStableAdaptation=0;
  VrrTimingController c(cfg,true,policy);double slot=1000000;uint64_t submitted=0;uint32_t pts=0;
  std::mt19937_64 rng(42);std::gamma_distribution<double> jitter(2.0,400.0);std::uniform_real_distribution<double> spike(0,1);
  double sum=0;uint64_t counted=0;
@@ -91,7 +91,7 @@ DropRun rateDropRun(bool follow,uint64_t version=6) {
  cfg.experimentalInputPercentilePpm=1;cfg.experimentalBoundedCatchup=true;
  cfg.smoothFrameTiming=false;cfg.timingOptions={4000,9995,300,500};
  auto policy=vrrTimingParametersForSession(cfg);policy.playoutDelayStartSeedUs=1000;
- policy.playoutInputHitchMissesOnly=version;
+ policy.playoutInputHitchMissesOnly=version;policy.playoutInputStableAdaptation=version>=10;
  policy.playoutInputRateDropSnap=follow;policy.playoutInputBoundedRecoveryCredit=1;
  VrrTimingController c(cfg,true,policy);uint64_t slot=1000000,submitted=0,frame=0;uint32_t pts=0;
  std::mt19937_64 rng(7);std::uniform_int_distribution<uint64_t> jitter(0,600);

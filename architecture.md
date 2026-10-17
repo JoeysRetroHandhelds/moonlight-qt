@@ -1,3 +1,44 @@
+Stable input adaptation (2026-10-17, based on `181415ec`): new adaptive
+sessions retain input-hitch scoring policy 10 and additionally select
+`playout_input_stable_adaptation=1`. This supersedes the release behavior below.
+
+The selected long-window percentile and actual-miss protection floor size the
+learned target. Release follows genuine falling demand at the established
+250 us/s rate. Repeated speculative 100 us target reductions and their accelerated
+roughly 5 ms/s release are disabled. Growth still requires an eligible,
+same-frame readiness-attributed preventable hitch below the selected goal, is
+limited to its measured requirement, and uses the normal configured rise rate.
+Unprotectable requirements, invalid mappings, packet loss, overload, harmless
+readiness overruns and post-input timing errors keep their existing exclusion
+rules. The score's definition, selected target/history, and recent reporting
+window do not change. A substantially larger learned layer can restore protection
+at once; smaller layers retain applied protection and use the same normal drain.
+
+Timing recovery remains bounded by the current PhaseTrajectory, physical floors
+and intentional extra-delay budget. The historical uncapped timing-recovery
+ablation is not selected: on the latest completed capture it reduces
+modeled jerk while accumulating unacceptable modeled latency. Input adaptation
+is therefore restored independently of scoring and timing recovery. Old captures
+without the new parameter select zero and preserve their historical release law.
+Cache identity includes the effective stable-adaptation revision.
+
+Matched final-policy replay uses the newest completed capture selected for this
+iteration, `moonlight-pacing-20261017-005745-33392.vrrtrace` (SHA-256
+`ea74dd760492a91a666f3f62dba248c9e1559418378b9dbd5d085df5fd9606ef`).
+The untouched capture passes exact baseline and sequence-integrity checks.
+Stable adaptation reduces qualifying input misses from 400 to 201. On matching
+frames outside the first five seconds and one second around rate/phase changes,
+within continuous matched spans, total buffer movement falls 52.471 to 30.877 ms,
+with reversals of at least 400 us falling 16 to 13. Mean decode-to-submission rises 14.868 to 15.365 ms,
+and p99 32.247 to 32.415 ms. Modeled presented-jerk pairs over 2 ms fall
+20.7% to 19.5%; sender-spacing residual p99 is reported separately in the replay
+artifacts. All five nominal/decision/preparation/submission/scheduler scenarios
+pass explicit buffer, mean/p99 latency and modeled interval-safety bounds without
+worker saturation. Fault bounds are relative to the unchanged policy under the
+same injection and are not normal operating latency. These are software/model
+results, not physical display or live integration proof. Artifacts are under
+`build/stable-buffer-recovery-20261017/`.
+
 Layer-drain correction (2026-10-17, based on `1a5bef09`): new adaptive
 sessions select input-hitch policy 10. This supersedes policy 9 below.
 

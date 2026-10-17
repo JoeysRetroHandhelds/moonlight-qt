@@ -1914,3 +1914,16 @@ success during idle spans, and session resets. Overlay fit fixtures exercise the
 recent and full-history scores together at Deck and 4K sizes. Artifacts for this
 correction are under `build/layer-drain-correction/`. Deterministic checks do not
 establish physical display smoothness.
+
+### Stable learned target with current miss scoring
+
+`playout_input_stable_adaptation=1` restores the long-window target and configured
+250 us/s release without speculative release probes. It does not alter input
+eligibility or same-frame preventable-hitch attribution. Focused integration
+checks cover a clean-but-late input plateau, exclusion beyond the buffer maximum,
+normal bounded growth on actual qualifying misses, invalid input, ordinary
+lower-layer drain and immediate upward learned-layer restoration. Replay config
+checks require old snapshots to default the flag to zero and reject values above
+one. The final comparison and stress artifacts are under
+`build/stable-buffer-recovery-20261017/`; rejected timing-recovery experiments
+are retained separately from the selected candidate.

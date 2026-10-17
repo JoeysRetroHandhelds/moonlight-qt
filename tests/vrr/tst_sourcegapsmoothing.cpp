@@ -119,7 +119,7 @@ VrrTimingParameters fixedDelayPolicy(const VrrSessionConfig& session, bool produ
     // Readiness clipping and actual schedule() still run. These source-phase
     // fixtures predate the policy-9 shared applied-timing slew; keep policy 8
     // explicit here. testFixedPadAndSharedLiveSlew covers the new live policy.
-    if (production && p.playoutInputHitchMissesOnly >= 9) p.playoutInputHitchMissesOnly=8;
+    if (production && p.playoutInputHitchMissesOnly >= 9) {p.playoutInputHitchMissesOnly=8;p.playoutInputStableAdaptation=0;}
     p.playoutDelayAdaptive = 0;
     p.sourcePlayoutDelayUs = 10000;
     p.playoutDelayMinimumUs = 10000;
@@ -459,7 +459,7 @@ void testFixedPadAndSharedLiveSlew()
         session.experimentalBoundedCatchup=true;
         session.timingOptions={4000,9950,120,tolerance};
         auto p=vrrTimingParametersForSession(session);
-        p.playoutInputHitchMissesOnly=version;
+        p.playoutInputHitchMissesOnly=version;p.playoutInputStableAdaptation=0;
         p.playoutDelayStartSeedUs=4000;
         VrrTimingController c(session,true,p);
         uint32_t pts=0;uint64_t previousTotal=0,previousExtra=0,previousInput=0,previousAt=0,submitted=0;

@@ -335,6 +335,8 @@ bool Pacer::initialize(SDL_Window* window, int maxVideoFps,
             const auto recoveryPolicy = vrrTimingParametersForSession(config);
             if (recoveryPolicy.playoutInputHitchMissesOnly)
                 context += QStringLiteral("|input-hitch-misses=%1").arg(recoveryPolicy.playoutInputHitchMissesOnly);
+            if (recoveryPolicy.playoutInputStableAdaptation)
+                context += QStringLiteral("|stable-input-adaptation=%1").arg(recoveryPolicy.playoutInputStableAdaptation);
             context += QStringLiteral("|late-recovery=%1|buffer-ratio=%2")
                 .arg(recoveryPolicy.playoutLateRecovery)
                 .arg(recoveryPolicy.playoutDelayMaximumPeriodPerMille);

@@ -7564,6 +7564,7 @@ void testSourceRelativeCadenceDetection()
 VrrTimingParameters historicalAbsorb6(const VrrSessionConfig& session)
 {
     auto p=vrrTimingParametersForSession(session);
+    p.playoutInputStableAdaptation=0;
     p.playoutSmoothingWindowedCadence=6;
     p.playoutSmoothingMaxLagUs=8000;
     p.playoutSmoothingReserveMaxUs=5000;

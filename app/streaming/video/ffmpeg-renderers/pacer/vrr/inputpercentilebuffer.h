@@ -73,6 +73,9 @@ public:
     // 22:48/22:55 sessions; tracking the maximum missed 8 and 16.
     // A buffer resumed from evidence it already trusts skips learning.
     void endLearning() { m_Learning = false; }
+    // Keep the learned percentile and configured fall rate in charge. Miss
+    // eligibility and the evidence required for growth remain independent.
+    void setStableAdaptation(bool stable) { m_StableAdaptation = stable; }
     // While learning, ignore the largest `trim` requirements so one startup
     // or scene-load outlier cannot set protection.
     void setLearningTrim(size_t trim) { m_LearningTrim = trim; }
@@ -518,7 +521,7 @@ private:
     }
     bool canProbeRelease() const {
         const uint64_t tail = 1000000 - m_Stats.probabilityPpm;
-        return m_HitchMissesOnly >= 7 && m_ReleaseIntervalUs && m_Stats.vrrHeadroomUs &&
+        return !m_StableAdaptation && m_HitchMissesOnly >= 7 && m_ReleaseIntervalUs && m_Stats.vrrHeadroomUs &&
             m_Stats.toleranceUs &&
             m_Stats.recentEligible && m_Stats.recentReleaseSamples >= 8 &&
             (m_HitchMissesOnly >= 9 ||
@@ -763,6 +766,7 @@ private:
             m_LayerTransitionActive = false;
     }
     int64_t m_SourceRelativeQuantileUs = 0, m_SourceRelativeMissQuantileUs = 0;
+    bool m_StableAdaptation = false;
     uint64_t m_ReleaseIntervalUs = 0;
     uint64_t m_ReleaseStepRemainingUs = 0;
     uint64_t m_ReleaseTrialFloorUs = 0, m_ReleaseTrialAtUs = 0, m_ReleaseTrialEligible = 0;

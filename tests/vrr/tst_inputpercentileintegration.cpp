@@ -322,6 +322,43 @@ void testNormalDrainAfterLayerRework() {
     check(extra.smoothing(0)==500,
           "normal input release cannot accumulate debt that freezes extra-delay recovery");
 }
+void testStableTargetKeepsPreventableMissScoring() {
+    const auto observe=[](InputPercentileBuffer& p,uint64_t f,int64_t required,
+                          bool hitch=false,bool valid=true) {
+        p.observe(f,1000000+f*10000,2000000+f*10000,required,valid,
+            1000,12000,995000,120000000,1000,250,0,500,1000,0,hitch,10);
+    };
+    InputPercentileBuffer stable, probing;
+    stable.reset(6000);stable.setStableAdaptation(true);probing.reset(6000);
+    for(uint64_t f=1;f<=400;++f) {observe(stable,f,9000);observe(probing,f,9000);}
+    check(stable.stats().currentUs==6000 && stable.stats().targetUs==6000 &&
+          probing.stats().currentUs==1000,
+          "stable adaptation retains the learned plateau instead of repeatedly probing below it");
+    check(stable.stats().missed==0 && probing.stats().missed==0 && stable.stats().eligible==400,
+          "a raw readiness overrun without a matching hitch never counts as a preventable miss");
+    const auto eligible=stable.stats().eligible;
+    observe(stable,401,18000,true);
+    check(stable.stats().eligible==eligible && stable.stats().missed==0 && stable.stats().currentUs==6000,
+          "work beyond the selected buffer maximum stays excluded even when it hitches");
+    observe(stable,402,9000,true);observe(stable,403,9000,true);observe(stable,404,9000,true);
+    check(stable.stats().missed==3 && stable.stats().targetUs==8500 &&
+          stable.stats().currentUs>6000 && stable.stats().currentUs<=6030,
+          "fresh preventable hitches fund protection with normal bounded growth rather than a jump");
+    const auto before=stable.stats().currentUs;
+    observe(stable,405,9000,false,false);
+    check(stable.stats().currentUs==before && stable.stats().missed==3,
+          "invalid readiness cannot grow protection or turn into successful feedback");
+    InputPercentileBuffer down;down.reset(1000);down.setStableAdaptation(true);
+    observe(down,1,9000);down.transitionFrom(6000);
+    check(down.stats().currentUs==6000 && down.stats().targetUs==1000,
+          "a lower layer retains applied protection and publishes its learned destination");
+    for(uint64_t f=2;f<=101;++f) observe(down,f,9000);
+    check(down.stats().currentUs==5750 && down.stats().effectiveFallRateUsPerSecond==250,
+          "lower layers use the historical 250 us/s drain without an accelerated layer shortcut");
+    InputPercentileBuffer up;up.reset(6000);up.setStableAdaptation(true);
+    observe(up,1,9000);up.transitionFrom(1000);
+    check(up.stats().currentUs==6000,"larger learned layers still restore their existing protection immediately");
+}
 void testSharedExtraBufferAllowance() {
     for(const uint64_t tolerance : {250,500,2000}) {
         Vrr13::ExtraBufferSlew slew;
@@ -904,7 +941,7 @@ void testActualControllerRateBandsRestoreProtection() {
     session.smoothFrameTiming=false;session.experimentalInputPercentilePpm=995000;
     session.timingOptions={1000,9950,60,500};
     auto policy=vrrTimingParametersForSession(session);
-    policy.playoutInputHitchMissesOnly=6; // Preserve the recorded-policy regression fixture.
+    policy.playoutInputHitchMissesOnly=6;policy.playoutInputStableAdaptation=0; // Preserve the recorded-policy regression fixture.
     // Exercise the explicit 12 ms fixture budget; the independent low-latency
     // half-refresh cap would make its 5 ms spikes unpreventable by definition.
     policy.latencyFixEnabled=0;
@@ -959,7 +996,7 @@ void testOrdinaryVariationKeepsLayer() {
         VrrSessionConfig session;session.streamRateHz=116;session.displayRefreshHz=120;
         session.experimentalInputPercentilePpm=1;session.timingOptions={1000,9950,120,500};
         auto policy=vrrTimingParametersForSession(session);
-        policy.playoutInputHitchMissesOnly=version;policy.latencyFixEnabled=0;
+        policy.playoutInputHitchMissesOnly=version;policy.playoutInputStableAdaptation=version>=10;policy.latencyFixEnabled=0;
         VrrTimingController controller(session,true,policy);
         uint64_t slot=1000000,submitted=0;uint32_t pts=0;int frame=0;
         const auto feed=[&](uint32_t ticks) {
@@ -1020,7 +1057,7 @@ void testFastControllerLayerRoundTrip(uint64_t version, bool bounded=false) {
     session.timingOptions={1000,9950,120,500};
     auto policy=vrrTimingParametersForSession(session);
     policy.latencyFixEnabled=0;
-    policy.playoutInputHitchMissesOnly=version;
+    policy.playoutInputHitchMissesOnly=version;policy.playoutInputStableAdaptation=version>=10;
     policy.playoutDelayStartSeedUs=4000;policy.playoutDelayMinimumUs=1000;
     policy.playoutDelayMaximumUs=12000;
     policy.playoutDelayMaximumPeriodPerMille=policy.playoutDelayCapSourcePeriodPerMille=0;
@@ -1080,7 +1117,7 @@ void testRateBaselineStepIsNotClockDrift() {
         session.experimentalBoundedCatchup=true;
         session.experimentalInputPercentilePpm=995000;session.timingOptions={1000,9950,120,500};
         auto policy=vrrTimingParametersForSession(session);
-        policy.playoutInputHitchMissesOnly=version;policy.latencyFixEnabled=0;
+        policy.playoutInputHitchMissesOnly=version;policy.playoutInputStableAdaptation=version>=10;policy.latencyFixEnabled=0;
         policy.playoutDelayStartSeedUs=1000;
         VrrTimingController c(session,true,policy);
         uint64_t slot=1000000,submitted=0,pts=0;int frame=0;
@@ -1177,7 +1214,7 @@ void testActualControllerRequiresAnInputHitch() {
     session.latencyMode=1;session.smoothFrameTiming=false;session.experimentalInputPercentilePpm=1;
     session.timingOptions={1000,9950,10,500};
     auto base=vrrTimingParametersForSession(session);
-    check(base.playoutInputHitchMissesOnly==10,"production input goals select fast layers and gradual adaptation");
+    check(base.playoutInputHitchMissesOnly==10 && base.playoutInputStableAdaptation==1,"production keeps preventable-miss scoring with stable target adaptation");
     base.playoutDelayStartSeedUs=1000;base.playoutDelayMinimumUs=1000;base.playoutDelayMaximumUs=6000;
     base.playoutDelayMaximumPeriodPerMille=base.playoutDelayCapSourcePeriodPerMille=0;
     base.playoutInputLearningTrim=0;
@@ -1187,7 +1224,10 @@ void testActualControllerRequiresAnInputHitch() {
     uint64_t misses[3]={},raises[3]={};
     for(int scenario=0;scenario<3;++scenario) {
         auto p=base;
-        if(scenario==0) p.playoutInputHitchMissesOnly=0; // Recorded raw-input policy.
+        if(scenario==0) { // Recorded raw-input policy.
+            p.playoutInputHitchMissesOnly=0;
+            p.playoutInputStableAdaptation=0;
+        }
         VrrTimingController controller(session,true,p);
         for(int i=0;i<1500;++i) {
             const uint64_t source=1000000+uint64_t(i)*10000;
@@ -1325,6 +1365,7 @@ int main() {
     testFeedbackBoundedRelease();
     testAsymmetricLayerBufferMovement();
     testNormalDrainAfterLayerRework();
+    testStableTargetKeepsPreventableMissScoring();
     testSharedExtraBufferAllowance();
     testOnlyPreventableHitchesScoreAndGrow();
     testAppliedProtectionFollowsClockCoordinate();

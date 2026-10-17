@@ -223,6 +223,7 @@ VrrTimingParameters vrrTimingParametersForSession(
     parameters.playoutAbsorbedJitterRelease = 0;
     parameters.playoutInputPercentileEnabled = config.experimentalInputPercentilePpm != 0;
     parameters.playoutInputHitchMissesOnly = parameters.playoutInputPercentileEnabled ? 10 : 0;
+    parameters.playoutInputStableAdaptation = parameters.playoutInputPercentileEnabled ? 1 : 0;
     parameters.boundedCatchupEnabled = config.experimentalBoundedCatchup;
     parameters.normalizedSourceMapping = config.experimentalBoundedCatchup;
     if (parameters.boundedCatchupEnabled) {
@@ -2677,6 +2678,7 @@ void VrrTimingController::noteSubmission(bool submitted, bool cancelled,
                 m_InputPercentileBuffer.setLearningTrim(
                     static_cast<size_t>(m_Parameters.playoutInputLearningTrim));
                 const auto inputBefore = m_InputPercentileBuffer.stats();
+                m_InputPercentileBuffer.setStableAdaptation(m_Parameters.playoutInputStableAdaptation != 0);
                 m_InputPercentileBuffer.observe(m_Pending.smoothness.frame,
                     enqueueUs ? enqueueUs : m_Pending.inputObservationUs,
                     m_Pending.intervalIntendedUs, m_Pending.inputRequiredUs, validInput,
@@ -4207,6 +4209,7 @@ void VrrTimingController::updatePlayoutHistory(
                     if (settling) m_BufferLayerDrain = true;
                     else m_InputRateDropAtUs = 0;
                 }
+                m_InputPercentileBuffer.setStableAdaptation(m_Parameters.playoutInputStableAdaptation != 0);
                 m_InputPercentileBuffer.advance(nowUs, playoutDelayMinimumUs(),
                     playoutDelayMaximumUs(), m_Parameters.playoutInputPercentileTargetPerMillion,
                     m_Parameters.playoutInputPercentileWindowUs,
