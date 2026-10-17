@@ -373,8 +373,8 @@ bool validateVrrTimingParameters(const VrrTimingParameters& value,
             value.playoutGpuReadinessAdaptation > 1) {
         return fail("prediction-only, display event requirement, native hitch adaptation, readiness adaptation, stable smoothness reference, learned preparation lead, observed-period cap, capacity telemetry, absorbed jitter release, and GPU readiness flags must be 0 or 1");
     }
-    if (value.playoutInputClockRelativeHistory > 3) {
-        return fail("playout_input_clock_relative_history must be 0 to 3");
+    if (value.playoutInputClockRelativeHistory > 4) {
+        return fail("playout_input_clock_relative_history must be 0 to 4");
     }
     if (value.playoutInputPercentileToleranceUs != 0 &&
         (value.playoutInputPercentileToleranceUs < 250 || value.playoutInputPercentileToleranceUs > 2000 ||

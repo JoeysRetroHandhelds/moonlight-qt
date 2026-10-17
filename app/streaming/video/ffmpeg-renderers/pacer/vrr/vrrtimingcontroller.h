@@ -1,6 +1,7 @@
 #pragma once
 #include "bufferaudit.h"
 #include "inputlayercadence.h"
+#include "receivedriftclock.h"
 #include "inputcoveragehistory.h"
 #include "extrabufferslew.h"
 
@@ -856,6 +857,9 @@ private:
     // Input history coordinate: applied offset movement minus the drift rate
     // (trailing least-squares slope in mode 3), continuous across reseeds.
     uint64_t m_PlayoutOffsetEpoch = 0;
+    Vrr13::ReceiveDriftClock m_ReceiveDriftClock;
+    bool m_ReceiveDriftPacketValid = false;
+    int64_t m_ReceiveDriftPacketOffsetUs = 0;
     bool m_InputClockValid = false;
     uint64_t m_InputClockEpoch = 0;
     int64_t m_InputClockLastOffsetUs = 0;

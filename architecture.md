@@ -1,3 +1,17 @@
+## Candidate receive-clock correction (review pending, not installed)
+
+New sessions select input clock-relative history revision4. Revisions0--3 keep
+historical replay semantics. The drift observer fits packet-receive/RTP offsets,
+using100ms bucket minima over the existing120s clock-fit window, rather than
+fitting producer mapping that includes decoder service. Buffer learning history,
+coverage target/tolerance, rate layers and actuator rise/fall laws are unchanged.
+A material change in actual source cadence starts a new drift-fit window without
+resetting buffer evidence or accumulated clock coordinates; it retains the last
+qualified oscillator slope while reacquiring. Clock qualification is independent
+of cached FPS layer selection. Invalid packets do not become evidence and an
+unrefreshed slope expires after120s. Calibration identity includes clock revision.
+Native build/replay and independent UltraCode review are required before use.
+
 Buffer quality observability (2026-10-17, accepted base `75e97d26`):
 the CPU optimization and eligible-age/fresh-reacquisition correction are now
 separate local commits. The staged native A/B binaries remain unchanged.

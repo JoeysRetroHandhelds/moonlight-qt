@@ -333,6 +333,8 @@ bool Pacer::initialize(SDL_Window* window, int maxVideoFps,
             // queue policy is unconditional rather than a live preference.
             context += QStringLiteral("|mean-miss-queue-v2");
             const auto recoveryPolicy = vrrTimingParametersForSession(config);
+            if (recoveryPolicy.playoutInputClockRelativeHistory >= 4)
+                context += QStringLiteral("|input-receive-drift-clock=%1").arg(recoveryPolicy.playoutInputClockRelativeHistory);
             if (recoveryPolicy.playoutInputHitchMissesOnly)
                 context += QStringLiteral("|input-hitch-misses=%1").arg(recoveryPolicy.playoutInputHitchMissesOnly);
             if (recoveryPolicy.playoutInputStableAdaptation)

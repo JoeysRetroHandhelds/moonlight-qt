@@ -107,3 +107,6 @@ SUBDIRS += performancestats
 # Clock-relative history and bounded recovery credit regression.
 SUBDIRS += inputaccounting
 inputaccounting.file = $$PWD/inputaccounting.pro
+
+receivedriftclock.file = $$PWD/receivedriftclock.pro
+SUBDIRS += receivedriftclock

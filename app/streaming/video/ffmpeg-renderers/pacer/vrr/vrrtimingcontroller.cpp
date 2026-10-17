@@ -234,7 +234,7 @@ VrrTimingParameters vrrTimingParametersForSession(
         parameters.playoutCatchupCarryLimitPeriodPerMille = kCatchupCarryLimitPeriodPerMille;
     }
     if (parameters.playoutInputPercentileEnabled) {
-        parameters.playoutInputClockRelativeHistory = config.correctInputAccounting && config.experimentalBoundedCatchup ? 3 : 0;
+        parameters.playoutInputClockRelativeHistory = config.correctInputAccounting && config.experimentalBoundedCatchup ? 4 : 0;
         // Lateness within the physical VRR room is credited, scaled by the
         // profile's miss allowance: a credited late frame is shown late, an
         // interval stretch, so Low Latency (1%) takes the whole room, Balanced
@@ -591,6 +591,8 @@ void VrrTimingController::clearTimeline(bool retainLearnedBudgets)
         m_IntervalBuffer.reset();
         m_InputPercentileBuffer = Vrr13::InputPercentileBuffer{};
         m_InputCoverageHistory = {};
+        m_ReceiveDriftClock = {};
+        m_ReceiveDriftPacketValid = false;
         m_InputHeadroomUs = 0;
         m_InputLayers.clear();
         m_InputLayerPeriodUs = 0;
@@ -758,6 +760,7 @@ VrrTimingDecision VrrTimingController::schedule(const PacedFrame& frame,
                                                  uint64_t nowUs)
 {
     m_Pending = PendingFrame {};
+    m_ReceiveDriftPacketValid = false;
     learnDecodeGpu(frame);
     m_SmoothingEngaged = false;
     if (m_Parameters.normalizedSourceMapping) {
@@ -859,6 +862,11 @@ VrrTimingDecision VrrTimingController::schedule(const PacedFrame& frame,
         const uint64_t offsetClockUs = timeBasedOffset ?
             (m_Parameters.playoutOffsetSourceClock != 0 ? rtpUs : nowUs) :
             mappingUs;
+        // Mode 4 observes a physical receive/RTP clock before decoder service
+        // and adaptive timing are added. Invalid packets do not teach drift.
+        m_ReceiveDriftPacketValid = frame.timestampValid() && frame.receiveUs() != 0 &&
+            cadence.eligible && frame.lostPackets() == 0;
+        m_ReceiveDriftPacketOffsetUs = signedDifference(frame.receiveUs(), rtpUs);
         const int64_t appliedOffsetUs = observePlayoutOffset(
             offsetClockUs,
             offsetUs, rebased || cadence.eligible, cadence.phaseDiscontinuity);
@@ -3346,6 +3354,10 @@ int64_t VrrTimingController::inputClockOffsetUs(uint64_t nowUs)
         m_InputClockLastOffsetUs = m_AppliedPlayoutOffsetUs;
         m_InputClockLastUs = m_InputDriftAnchorUs = nowUs;
         m_InputDriftAnchorRawUs = m_InputClockRawUs;
+        if (m_Parameters.playoutInputClockRelativeHistory == 4)
+            m_ReceiveDriftClock.advance(nowUs, m_ReceiveDriftPacketValid,
+                m_ReceiveDriftPacketOffsetUs, m_SourcePeriodUs, m_PlayoutOffsetEpoch,
+                m_Parameters.materialRateChangePercent);
         return m_InputClockCoordinateUs;
     }
     // A reseed is a sender clock jump, not movement of retained readiness:
@@ -3361,6 +3373,15 @@ int64_t VrrTimingController::inputClockOffsetUs(uint64_t nowUs)
     m_InputClockRawUs += deltaUs;
     m_InputClockCoordinateUs += deltaUs;
     if (nowUs <= m_InputClockLastUs) return m_InputClockCoordinateUs;
+
+    if (m_Parameters.playoutInputClockRelativeHistory == 4) {
+        m_InputClockLastUs = nowUs;
+        m_InputClockCoordinateUs -= m_ReceiveDriftClock.advance(nowUs,
+            m_ReceiveDriftPacketValid, m_ReceiveDriftPacketOffsetUs,
+            m_SourcePeriodUs, m_PlayoutOffsetEpoch,
+            m_Parameters.materialRateChangePercent);
+        return m_InputClockCoordinateUs;
+    }
 
     // Offset tracking follows host/client clock drift as well as mapping
     // movement. Drift moves future readiness by the same amount, so only the
