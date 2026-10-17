@@ -1,3 +1,20 @@
+Offline exact-score experiment: interval-quality integer totals update on ring
+mutation/expiry. Weighted sums retain the original physical-index floating-point
+addition order; sparse zero-only buckets are skipped. Reporting/control policy,
+source timing, target/window and scoring are unchanged. This experiment is not
+installed and is separate from the frozen CPU-only application.
+
+Isolated exact segmented input-window experiment (2026-10-17, based on `7d1148f9`):
+`InputPercentileBuffer` retains chronological samples for expiry and outcomes,
+with small sorted blocks indexing raw requirements and proven misses. Integer
+nearest ranks, duplicate multiplicity, selected target/history, seeded layers,
+source coordinates and adaptation rules remain unchanged. Valid adjacent-pair
+coverage is maintained on insertion and expiry; large expiry advances compact
+indexes once. Splits/merges bound ordinary shifts to a small block rather than
+moving the entire retained history. Block allocation and retention are CPU and
+memory tradeoffs, not a statistical or timing-policy change. This experiment
+is isolated and has no physical display validation.
+
 Stable input adaptation (2026-10-17, based on `181415ec`): new adaptive
 sessions retain input-hitch scoring policy 10 and additionally select
 `playout_input_stable_adaptation=1`. This supersedes the release behavior below.

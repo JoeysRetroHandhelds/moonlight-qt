@@ -1,8 +1,10 @@
 #pragma once
+#include "rollingquantile.h"
 #include <algorithm>
 #include <cstdint>
 #include <deque>
 #include <limits>
+#include <utility>
 #include <vector>
 
 namespace Vrr13 {
@@ -91,6 +93,9 @@ public:
     // prior requirements. Retain current protection while relearning its size.
     void breakSequence() {
         m_Samples.clear();
+        m_Requirements.clear();
+        m_MissedRequirements.clear();
+        m_ValidPairCoverageUs = 0;
         m_Stats.targetUs = m_Stats.currentUs;
         m_Stats.samples = m_Stats.observationSpanUs = m_Stats.validPairCoverageUs = 0;
         m_Stats.recentEligible = m_Stats.recentAbsorbed = m_Stats.recentMissed = 0;
@@ -127,6 +132,7 @@ public:
     // copied requirements seed its target; their outcomes belonged to the
     // other rate, so they leave this layer's coverage.
     void markEvidenceAsSeed() {
+        m_MissedRequirements.clear();
         for (auto& sample : m_Samples) {
             if (sample.seed) continue;
             --m_Stats.recentEligible;
@@ -344,7 +350,12 @@ public:
                 std::numeric_limits<int64_t>::max() : readinessBudgetUs < 0 &&
                 requiredUs < std::numeric_limits<int64_t>::min() - readinessBudgetUs ?
                 std::numeric_limits<int64_t>::min() : requiredUs + readinessBudgetUs;
-            m_Samples.push_back({observationUs, slotUs, offsetSum(rawRequired, clockOffsetUs), m_Epoch, absorbed, missed});
+            const int64_t normalizedRequired = offsetSum(rawRequired, clockOffsetUs);
+            if (!m_Samples.empty() && m_Samples.back().epoch == m_Epoch)
+                m_ValidPairCoverageUs += slotUs - m_Samples.back().slot;
+            m_Samples.push_back({observationUs, slotUs, normalizedRequired, m_Epoch, absorbed, missed});
+            m_Requirements.add(normalizedRequired);
+            if (missed) m_MissedRequirements.add(normalizedRequired);
             ++m_Stats.recentEligible;
             m_Stats.recentAbsorbed += absorbed;
             m_Stats.recentMissed += missed;
@@ -453,8 +464,14 @@ private:
         if (!m_FirstObservationUs) m_FirstObservationUs = atUs;
         return elapsed;
     }
-    void removeFront() {
+    void removeFront(bool updateIndex = true) {
         const auto& sample = m_Samples.front();
+        if (m_Samples.size() > 1 && sample.epoch == m_Samples[1].epoch)
+            m_ValidPairCoverageUs -= m_Samples[1].slot - sample.slot;
+        if (updateIndex) {
+            m_Requirements.remove(sample.required);
+            if (sample.missed && !sample.seed) m_MissedRequirements.remove(sample.required);
+        }
         if (!sample.seed) {
             --m_Stats.recentEligible;
             m_Stats.recentAbsorbed -= sample.absorbed;
@@ -463,6 +480,29 @@ private:
         m_Samples.pop_front();
     }
     bool expire(uint64_t atUs) {
+        if (!m_Samples.empty() && atUs - m_Samples.back().at >= m_Stats.windowUs) {
+            m_Samples.clear();
+            m_Requirements.clear();
+            m_MissedRequirements.clear();
+            m_ValidPairCoverageUs = 0;
+            m_Stats.recentEligible = m_Stats.recentAbsorbed = m_Stats.recentMissed = 0;
+            return true;
+        }
+        // Ordinary expiry removes one or two values. A long advance retires
+        // the same prefix with one exact compaction of each order index.
+        if (m_Samples.size() > 16 && atUs - m_Samples[16].at >= m_Stats.windowUs) {
+            std::vector<int64_t> requirements, missed;
+            for (const auto& sample : m_Samples) {
+                if (atUs - sample.at < m_Stats.windowUs) break;
+                requirements.push_back(sample.required);
+                if (sample.missed && !sample.seed) missed.push_back(sample.required);
+            }
+            const size_t count = requirements.size();
+            m_Requirements.removeBatch(std::move(requirements));
+            m_MissedRequirements.removeBatch(std::move(missed));
+            for (size_t i = 0; i < count; ++i) removeFront(false);
+            return true;
+        }
         bool changed = false;
         while (!m_Samples.empty() && atUs - m_Samples.front().at >= m_Stats.windowUs) {
             removeFront();
@@ -612,34 +652,21 @@ private:
             m_LastEvaluationUs = atUs;
             m_EvaluatedProbabilityPpm = probabilityPpm;
             m_EvaluatedWindowUs = windowUs;
-            std::vector<int64_t> values, missedValues;
-            values.reserve(m_Samples.size());
-            if (m_HitchMissesOnly >= 2 && belowMissGoal) missedValues.reserve(m_Stats.recentMissed);
-            m_Stats.validPairCoverageUs = 0;
-            for (size_t i = 0; i < m_Samples.size(); ++i) {
-                const auto& sample = m_Samples[i];
-                values.push_back(sample.required);
-                if (m_HitchMissesOnly >= 2 && belowMissGoal && sample.missed && !sample.seed)
-                    missedValues.push_back(sample.required);
-                if (i && sample.epoch == m_Samples[i - 1].epoch)
-                    m_Stats.validPairCoverageUs += sample.slot - m_Samples[i - 1].slot;
-            }
+            m_Stats.validPairCoverageUs = m_ValidPairCoverageUs;
             // One expected tail observation is support, not a confidence bound.
-            m_Stats.tailUncertain = values.size() < needed || m_Stats.historyTruncated;
+            m_Stats.tailUncertain = m_Requirements.size() < needed || m_Stats.historyTruncated;
             const size_t rank = m_Stats.tailUncertain ?
-                values.size() - std::min(m_LearningTrim, values.size() - 1) :
-                size_t((probabilityPpm * values.size() + 999999) / 1000000);
-            std::nth_element(values.begin(), values.begin() + rank - 1, values.end());
-            m_SourceRelativeQuantileUs = values[rank - 1];
+                m_Requirements.size() - std::min(m_LearningTrim, m_Requirements.size() - 1) :
+                size_t((probabilityPpm * m_Requirements.size() + 999999) / 1000000);
+            m_SourceRelativeQuantileUs = m_Requirements.atRank(rank);
             m_SourceRelativeMissQuantileUs = 0;
-            if (!missedValues.empty()) {
+            if (m_HitchMissesOnly >= 2 && belowMissGoal && !m_MissedRequirements.empty()) {
                 // Leave only the profile's permitted tail unprotected. Unlike
                 // the raw-input learning quantile, proven playback misses must
                 // not be trimmed away or replaced by harmless late inputs.
                 const size_t allowed = size_t(m_Stats.recentEligible * tail / 1000000);
-                const size_t missRank = missedValues.size() - std::min(allowed, missedValues.size() - 1);
-                std::nth_element(missedValues.begin(), missedValues.begin() + missRank - 1, missedValues.end());
-                m_SourceRelativeMissQuantileUs = missedValues[missRank - 1];
+                const size_t missRank = m_MissedRequirements.size() - std::min(allowed, m_MissedRequirements.size() - 1);
+                m_SourceRelativeMissQuantileUs = m_MissedRequirements.atRank(missRank);
             }
         }
         // Retained requirements use an immutable RTP/source coordinate. Only
@@ -776,6 +803,8 @@ private:
     bool m_RateDropDrain = false, m_RateDropFastDrain = false;
     struct Sample { uint64_t at, slot; int64_t required; uint64_t epoch; bool absorbed, missed; bool seed = false; };
     std::deque<Sample> m_Samples;
+    ExactRollingQuantile m_Requirements, m_MissedRequirements;
+    uint64_t m_ValidPairCoverageUs = 0;
     Stats m_Stats;
     uint64_t m_FirstObservationUs = 0, m_LastObservationUs = 0, m_LastEligibleUs = 0;
     uint64_t m_LastClockUs = 0, m_RiseRate = 0, m_FallRate = 0;

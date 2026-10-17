@@ -96,6 +96,8 @@ phasetrajectory.file = $$PWD/phasetrajectory.pro
 SUBDIRS += phasetrajectory
 inputpercentileintegration.file = $$PWD/inputpercentileintegration.pro
 SUBDIRS += inputpercentileintegration
+rollingquantile.file = $$PWD/rollingquantile.pro
+SUBDIRS += rollingquantile
 
 performancestats.file = $$PWD/performancestats.pro
 SUBDIRS += performancestats

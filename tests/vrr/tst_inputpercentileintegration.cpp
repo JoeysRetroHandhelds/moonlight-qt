@@ -1359,7 +1359,40 @@ void testActualControllerOptInAndEligibility() {
 #endif
 
 }
+void testExactWindowBulkExpiry() {
+    InputPercentileBuffer buffer;
+    buffer.reset(6000);
+    buffer.setStableAdaptation(true);
+    for (uint64_t frame = 1; frame <= 2000; ++frame) {
+        const auto at = 1000000 + frame * 1000;
+        buffer.observe(frame, at, at, 2000 + frame % 31, true,
+            1000, 12000, 995000, 10000000, 1000, 250, 0, 500, 0, 0, false, 10);
+    }
+    auto seeded = buffer;
+    seeded.markEvidenceAsSeed();
+    buffer.advance(12000000);
+    seeded.advance(12000000);
+    const auto partial = buffer.stats();
+    std::vector<int64_t> retained;
+    for (uint64_t frame = 1001; frame <= 2000; ++frame)
+        retained.push_back(2000 + frame % 31);
+    std::sort(retained.begin(), retained.end());
+    check(partial.samples == 1000 && partial.recentEligible == 1000 &&
+          partial.rawRequiredQuantileUs == retained[994] && partial.validPairCoverageUs == 999000,
+          "bulk expiry preserves exact nearest rank, duplicate counts, boundary and pair coverage");
+    check(seeded.stats().samples == 1000 && seeded.stats().recentEligible == 0,
+          "bulk expiry retains seed evidence without inventing eligible outcomes");
+    buffer.advance(11999999);
+    check(buffer.stats().samples == partial.samples && buffer.stats().currentUs == partial.currentUs,
+          "out-of-order advances cannot retire more evidence or spend release time");
+    buffer.advance(13000000);
+    check(buffer.stats().samples == 0 && buffer.stats().eligible == 2000 &&
+          buffer.stats().recentEligible == 0 && buffer.stats().targetUs == 1000,
+          "full expiry clears indexes and window outcomes while retaining session totals");
+}
+
 int main() {
+    testExactWindowBulkExpiry();
     testFastLayerCadence();testConfirmedLayerCadence();testContinuousCoverage();testResponsiveCoverageReporting();
     testGradualLayerGrowthAndHealthyRelease();
     testFeedbackBoundedRelease();
