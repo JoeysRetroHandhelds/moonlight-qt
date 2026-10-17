@@ -51,6 +51,9 @@
     X(uint64_t, playout_input_rate_drop_snap, playoutInputRateDropSnap, 0) \
     /* Nonzero: a never-seen rate layer is seeded from the previous layer only */ \
     /* when that layer's period is at most this many per mille of the new one. */ \
+    /* 0: recorded diagnostic-age cache; 1: eligible-age expiry; */ \
+    /* 2: expiry plus bounded fresh-empty-layer reacquisition. */ \
+    X(uint64_t, playout_input_layer_lifecycle, playoutInputLayerLifecycle, 0) \
     X(uint64_t, playout_input_layer_seed_ratio_per_mille, playoutInputLayerSeedRatioPerMille, 0) \
     /* Input-buffer learning ignores the largest `trim` requirements until the */ \
     /* profile tail is supported. */ \

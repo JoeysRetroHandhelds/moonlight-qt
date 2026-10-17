@@ -82,6 +82,20 @@ public:
     // or scene-load outlier cannot set protection.
     void setLearningTrim(size_t trim) { m_LearningTrim = trim; }
     bool learning() const { return m_Learning; }
+    // A newly created empty rate layer has no valid past to restore. Permit
+    // fresh causal misses to reacquire protection only until one expected tail
+    // observation is supported, and never beyond its original history window.
+    // This is an actuation budget, not a sample, success or learned protection.
+    void beginFreshLayerReacquisition(uint64_t atUs, uint64_t probabilityPpm, uint64_t windowUs) {
+        if (m_Stats.samples || m_LastEligibleUs) return;
+        const uint64_t tail = 1000000 - std::clamp<uint64_t>(probabilityPpm, 1, 999999);
+        m_ReacquisitionRemaining = (1000000 + tail - 1) / tail;
+        windowUs = std::clamp(windowUs, MinimumWindowUs, MaximumWindowUs);
+        m_ReacquisitionUntilUs = atUs + std::min(windowUs, std::numeric_limits<uint64_t>::max() - atUs);
+    }
+    // Observation-clock timestamp of usable evidence. Ineligible outcomes
+    // update diagnostics but cannot extend the learning history's lifetime.
+    uint64_t lastEligibleObservationUs() const { return m_LastEligibleUs; }
     bool layerTransitionActive() const { return m_LayerTransitionActive; }
     bool fastLayerDrain() const { return (m_LayerTransitionActive && m_LayerFastDrain) ||
         (m_RateDropDrain && m_RateDropFastDrain); }
@@ -375,13 +389,24 @@ public:
         // larger target or harmless late input cannot authorize the jump.
         const uint64_t attackTarget = m_HitchMissesOnly >= 2 ?
             (missed ? std::min(m_Stats.targetUs, headroom) : m_Stats.currentUs) : m_Stats.targetUs;
-        if (m_HitchMissesOnly < 7 && (m_Learning || m_HitchMissesOnly >= 2) &&
+        // Only an explicitly new, empty rate layer may reacquire rapidly.
+        // Its fixed eligible-input budget and original profile-window deadline
+        // survive phase breaks; invalid callbacks cannot rearm either bound.
+        const bool freshLearningAttack = m_HitchMissesOnly == 10 && m_Learning &&
+            m_ReacquisitionRemaining && observationUs < m_ReacquisitionUntilUs;
+        if ((m_HitchMissesOnly < 7 || freshLearningAttack) &&
+                (m_Learning || m_HitchMissesOnly >= 2) &&
                 eligible && attackTarget > m_Stats.currentUs) {
             m_Stats.currentUs = attackTarget;
             ++m_Stats.raises;
             m_ReleaseFraction = 0;
         }
-        if (m_Learning && m_Stats.samples && !m_Stats.tailUncertain) m_Learning = false;
+        if (eligible && m_ReacquisitionRemaining) --m_ReacquisitionRemaining;
+        if (observationUs >= m_ReacquisitionUntilUs) m_ReacquisitionRemaining = 0;
+        if (m_Learning && m_Stats.samples && !m_Stats.tailUncertain) {
+            m_Learning = false;
+            m_ReacquisitionRemaining = 0;
+        }
         // Invalid observations discard growth time and fractional growth credit;
         // decision-time advance must neither grow nor consume observation time.
         if (!eligible && m_Stats.targetUs > m_Stats.currentUs) m_ReleaseFraction = 0;
@@ -813,6 +838,7 @@ private:
     uint64_t m_EvaluatedProbabilityPpm = 0, m_EvaluatedWindowUs = 0, m_ReleaseFraction = 0;
     bool m_PreviousValid = false;
     bool m_Learning = true;
+    uint64_t m_ReacquisitionRemaining = 0, m_ReacquisitionUntilUs = 0;
     // 0: historical raw input; 1: historical hitch gate; 2: retain the
     // protection justified by qualifying misses while below the goal;
     // 3: also project retained protection with its source-clock coordinate.

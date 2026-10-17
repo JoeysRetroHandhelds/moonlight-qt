@@ -224,6 +224,9 @@ VrrTimingParameters vrrTimingParametersForSession(
     parameters.playoutInputPercentileEnabled = config.experimentalInputPercentilePpm != 0;
     parameters.playoutInputHitchMissesOnly = parameters.playoutInputPercentileEnabled ? 10 : 0;
     parameters.playoutInputStableAdaptation = parameters.playoutInputPercentileEnabled ? 1 : 0;
+    // Record lifecycle semantics explicitly; missing fields in older captures
+    // retain their historical eviction and reacquisition behavior.
+    parameters.playoutInputLayerLifecycle = parameters.playoutInputPercentileEnabled ? 2 : 0;
     parameters.boundedCatchupEnabled = config.experimentalBoundedCatchup;
     parameters.normalizedSourceMapping = config.experimentalBoundedCatchup;
     if (parameters.boundedCatchupEnabled) {
@@ -3626,7 +3629,8 @@ VrrTimingController::InputLayerChange VrrTimingController::updateInputLayer(
     // Layers whose evidence has aged out of their history are forgotten.
     for (auto it = m_InputLayers.begin(); it != m_InputLayers.end();) {
         const auto stats = it->buffer.stats();
-        const uint64_t lastUs = stats.lastInputObservationUs;
+        const uint64_t lastUs = m_Parameters.playoutInputLayerLifecycle ?
+            it->buffer.lastEligibleObservationUs() : stats.lastInputObservationUs;
         if (!lastUs || (nowUs > lastUs && nowUs - lastUs >= stats.windowUs)) it = m_InputLayers.erase(it);
         else ++it;
     }
@@ -3654,6 +3658,10 @@ VrrTimingController::InputLayerChange VrrTimingController::updateInputLayer(
         // Lateness learned at a much slower rate (a loading screen, a menu)
         // says nothing about the faster one; start from fresh evidence.
         next.continueTotalsFrom(m_InputPercentileBuffer);
+        if (m_Parameters.playoutInputLayerLifecycle >= 2)
+            next.beginFreshLayerReacquisition(nowUs,
+                m_Parameters.playoutInputPercentileTargetPerMillion,
+                m_Parameters.playoutInputPercentileWindowUs);
     }
     const bool settled = m_InputPercentileBuffer.stats().eligible >=
         m_InputLayerEligibleAtStart + (fastLayers ? 8 : kInputLayerMinimumFrames);
