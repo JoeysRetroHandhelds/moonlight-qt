@@ -452,16 +452,17 @@ void testAbsorbPolicySelection()
 }
 void testFixedPadAndSharedLiveSlew()
 {
-    for(const int tolerance : {250,500,1000}) {
+    for(const uint64_t version : {9,10}) for(const int tolerance : {250,500,1000}) {
         auto session=absorbSession(true,true);
         session.streamRateHz=120;session.displayRefreshHz=240;
         session.experimentalInputPercentilePpm=1;
         session.experimentalBoundedCatchup=true;
         session.timingOptions={4000,9950,120,tolerance};
         auto p=vrrTimingParametersForSession(session);
+        p.playoutInputHitchMissesOnly=version;
         p.playoutDelayStartSeedUs=4000;
         VrrTimingController c(session,true,p);
-        uint32_t pts=0;uint64_t previousTotal=0,previousAt=0,submitted=0;
+        uint32_t pts=0;uint64_t previousTotal=0,previousExtra=0,previousInput=0,previousAt=0,submitted=0;
         for(int f=0;f<700;++f) {
             pts+=f>=150 && f<400?(f%2?990:810):900;
             const uint64_t at=1000000+uint64_t(pts)*100/9;
@@ -475,11 +476,19 @@ void testFixedPadAndSharedLiveSlew()
                    "Absorb timing spends only its fixed pad and cannot add another reserve");
             const uint64_t total=d.playoutDelayUs+d.plannedExtraDelayUs();
             if(previousAt) {
-                const uint64_t change=std::max(total,previousTotal)-std::min(total,previousTotal);
+                const uint64_t extra=d.plannedExtraDelayUs();
+                const uint64_t change=version==9 ? std::max(total,previousTotal)-std::min(total,previousTotal) :
+                    std::max(extra,previousExtra)-std::min(extra,previousExtra);
                 expect(change<=uint64_t(tolerance)*(now-previousAt)/1000000+2,
-                       "live input and extra buffers together obey T per second within one layer");
+                       "extra-delay movement stays bounded; recorded policy 9 also charges input movement");
+                if (version==10) {
+                    const uint64_t inputChange=std::max(d.playoutDelayUs,previousInput)-std::min(d.playoutDelayUs,previousInput);
+                    const uint64_t rate=d.playoutDelayUs>previousInput ? 1000 : 5000;
+                    expect(inputChange<=rate*(now-previousAt)/1000000+2,
+                           "live input uses its normal rise/release bound independently of extra delay");
+                }
             }
-            previousAt=now;previousTotal=total;
+            previousAt=now;previousTotal=total;previousExtra=d.plannedExtraDelayUs();previousInput=d.playoutDelayUs;
             submitted=std::max(d.targetUs,now+500);
             c.notePreparationDuration(500,0,now+500);
             c.noteSchedulerDelays(0,0,true);

@@ -496,7 +496,7 @@ public:
             // all rates. Adaptation continues to use the active layer's own
             // stats internally; switching layers cannot erase playback history.
             if (m_Parameters.playoutInputHitchMissesOnly >= 8)
-                m_InputCoverageHistory.report(stats.inputPercentile);
+                m_InputCoverageHistory.report(stats.inputPercentile, m_Parameters.playoutInputHitchMissesOnly >= 10);
             stats.update.beforeUs = m_InputPercentileBeforeUs;
             stats.update.requestedUs = stats.inputPercentile.currentUs;
             stats.update.minimumUs = stats.inputPercentile.minimumUs;

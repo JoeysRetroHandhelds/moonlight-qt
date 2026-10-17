@@ -239,10 +239,10 @@ void VrrReplayConfigTest::inputPercentileToleranceRoundTrip()
     VrrSessionConfig inputSession;
     inputSession.experimentalInputPercentilePpm = 1;
     auto production = vrrTimingParametersForSession(inputSession);
-    QCOMPARE(production.playoutInputHitchMissesOnly, uint64_t(9));
+    QCOMPARE(production.playoutInputHitchMissesOnly, uint64_t(10));
     VrrTimingParameters hitchPolicy;
     QVERIFY2(applyVrrReplayControllerSnapshot(vrrTimingParametersToJson(production), hitchPolicy, error), qPrintable(error));
-    QCOMPARE(hitchPolicy.playoutInputHitchMissesOnly, uint64_t(9));
+    QCOMPARE(hitchPolicy.playoutInputHitchMissesOnly, uint64_t(10));
     QVERIFY(applyVrrReplayControllerSnapshot({{"playout_input_hitch_misses_only", 6}}, hitchPolicy, error));
     QCOMPARE(hitchPolicy.playoutInputHitchMissesOnly, uint64_t(6));
     QVERIFY(applyVrrReplayControllerSnapshot({{"playout_input_hitch_misses_only", 7}}, hitchPolicy, error));
@@ -251,8 +251,10 @@ void VrrReplayConfigTest::inputPercentileToleranceRoundTrip()
     QCOMPARE(hitchPolicy.playoutInputHitchMissesOnly, uint64_t(8));
     QVERIFY(applyVrrReplayControllerSnapshot({{"playout_input_hitch_misses_only", 9}}, hitchPolicy, error));
     QCOMPARE(hitchPolicy.playoutInputHitchMissesOnly, uint64_t(9));
-    QVERIFY(!applyVrrReplayControllerSnapshot({{"playout_input_hitch_misses_only", 10}}, hitchPolicy, error));
-    QCOMPARE(hitchPolicy.playoutInputHitchMissesOnly, uint64_t(9));
+    QVERIFY(applyVrrReplayControllerSnapshot({{"playout_input_hitch_misses_only", 10}}, hitchPolicy, error));
+    QCOMPARE(hitchPolicy.playoutInputHitchMissesOnly, uint64_t(10));
+    QVERIFY(!applyVrrReplayControllerSnapshot({{"playout_input_hitch_misses_only", 11}}, hitchPolicy, error));
+    QCOMPARE(hitchPolicy.playoutInputHitchMissesOnly, uint64_t(10));
     auto oldSnapshot = vrrTimingParametersToJson(production);
     oldSnapshot.remove("playout_input_hitch_misses_only");
     VrrTimingParameters oldPolicy;

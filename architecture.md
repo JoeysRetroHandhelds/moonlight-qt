@@ -1,3 +1,36 @@
+Layer-drain correction (2026-10-17, based on `1a5bef09`): new adaptive
+sessions select input-hitch policy 10. This supersedes policy 9 below.
+
+Policy 9 mistakenly coupled the layer rework to slower ordinary adaptation.
+Policy 10 restores the established input rise rate (configured 250--1000 us/s)
+and healthy continuous release: at most 0.5% of the source interval, T/2 and
+available VRR headroom per interval. Fresh eligible coverage, capacity and
+miss attribution still qualify adaptation. There is no 200-frame wait between
+100 us release probes. Genuine lower measured demand can also use the ordinary
+fall rate when accelerated release is not qualified. Fresh qualifying misses
+still interrupt healthy release and authorize measured growth; old misses alone
+cannot sustain further growth.
+
+Confirmed layers retain the 30 FPS separation, saved evidence and continuous
+session coverage. A substantially larger learned layer may restore protection
+immediately. Selecting a smaller layer retains the currently applied buffer,
+reports the learned destination at once, and drains with the normal release
+code. There is no T-per-frame downward shortcut or repeated post-drop snap.
+Interrupted transitions store the selected layer's own learned destination,
+not protection inherited from the previous layer. Intentional smoothing and
+recovery retain their movement budget, but input adaptation no longer spends
+that budget or accumulates debt that freezes extra-delay recovery. The fixed
+2T Absorb pad and physical readiness/ownership floors remain in force.
+
+The normal overlay and timing graph report recent eligible coverage over 10 s.
+The normal overlay also shows the full selected history (Balanced: 120 s),
+which remains the controller's learning history. Both reporting windows count
+actual matched eligible outcomes, survive rate changes and expire individually;
+invalid input never counts as clean, and an empty window reports N/A. This
+changes reporting responsiveness without redefining the selected target or
+resetting history at layer changes. Historical policies 0--9 remain explicit
+for replay, and cache identity includes policy 10.
+
 Nightly VRR integration (2026-10-17, master baseline `f0507ea5`):
 new adaptive sessions select input-hitch policy 9; Absorb microstutter selects
 smoothing revision 7. These supersede the historical policy descriptions below.

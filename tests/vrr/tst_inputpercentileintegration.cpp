@@ -103,6 +103,30 @@ void testContinuousCoverage() {
     check(stats.recentEligible==0,"coverage becomes unavailable when all real observations expire");
 }
 
+void testResponsiveCoverageReporting() {
+    Vrr13::InputCoverageHistory history;
+    InputPercentileBuffer::Stats stats;
+    history.observe(1000000,120000000,true,false,true);
+    history.observe(9000000,120000000,true,true,false);
+    history.observe(11000000,120000000,true,false,false);
+    history.report(stats,true);
+    check(stats.recentEligible==3 && stats.recentMissed==1 &&
+          stats.reportingWindowUs==10000000 && stats.reportingEligible==2 &&
+          stats.reportingMissed==0 && stats.reportingAbsorbed==1,
+          "the recent score recovers after ten seconds while the selected history retains its miss");
+    history.observe(12000000,120000000,true,false,true);
+    history.observe(12000001,120000000,false,false,false);
+    history.observe(5000000,120000000,true,false,false);
+    history.report(stats,true);
+    check(stats.reportingEligible==3 && stats.reportingMissed==1 && stats.recentMissed==2,
+          "fresh misses update both scores immediately and invalid or stale callbacks never add successes");
+    history.advance(22000000,120000000);history.report(stats,true);
+    check(stats.reportingEligible==0 && stats.reportingMissed==0 && stats.recentMissed==2,
+          "idle recent feedback becomes unavailable rather than inventing clean frames or erasing long history");
+    history={};history.report(stats,true);
+    check(stats.recentEligible==0 && stats.reportingEligible==0,
+          "a new session clears both reporting windows");
+}
 void testGradualLayerGrowthAndHealthyRelease() {
     InputPercentileBuffer current, historical, delayed, noRoom;
     current.reset(6000); historical.reset(6000); noRoom.reset(6000);
@@ -226,6 +250,77 @@ void testAsymmetricLayerBufferMovement() {
     InputPercentileBuffer stored;stored.reset(1000);observe(stored,1);stored.transitionFrom(6000);
     stored.prepareForLayerStorage();
     check(stored.stats().currentUs==1000,"an interrupted drain stores that layer's own target, not inherited excess");
+}
+// Policy 10 keeps the layer rework but restores the ordinary policy-8 drain.
+void testNormalDrainAfterLayerRework() {
+    for (const uint64_t period : {8333, 33333}) {
+        InputPercentileBuffer normal, corrected, restricted;
+        normal.reset(6000); corrected.reset(6000); restricted.reset(6000);
+        for (uint64_t f=1; f<=240; ++f) {
+            for (auto pair : {std::pair<InputPercentileBuffer*,uint64_t>{&normal,8},
+                              {&corrected,10}, {&restricted,9}})
+                pair.first->observe(f,1000000+f*period,2000000+f*period,9000,true,
+                    1000,12000,995000,120000000,1000,250,0,500,1000,0,false,pair.second);
+            check(corrected.stats().currentUs==normal.stats().currentUs &&
+                  corrected.stats().targetUs==normal.stats().targetUs,
+                  "steady healthy release and target match the normal pre-9 law at both source rates");
+        }
+        check(corrected.stats().currentUs==1000 && restricted.stats().currentUs>5000,
+              "healthy protection drains in seconds instead of waiting for repeated 200-frame trials");
+    }
+    const auto observe=[](InputPercentileBuffer& p,uint64_t f,int64_t required,
+                          bool hitch=false,bool valid=true) {
+        p.observe(f,1000000+f*10000,2000000+f*10000,required,valid,
+            1000,12000,995000,120000000,1000,250,0,500,1000,0,hitch,10);
+    };
+    InputPercentileBuffer down, normal;
+    down.reset(1000); normal.reset(6000);
+    observe(down,1,9000); observe(normal,1,1500);
+    down.transitionFrom(6000);
+    check(down.stats().currentUs==6000 && down.stats().targetUs==1000,
+          "a lower layer retains the old buffer and immediately reports the learned destination");
+    uint64_t previous=6000;
+    for (uint64_t f=2; f<=200; ++f) {
+        observe(down,f,9000); observe(normal,f,1500);
+        check(down.stats().currentUs==normal.stats().currentUs,
+              "a decreasing layer uses the exact ordinary drain without a T-per-frame shortcut");
+        check(previous-down.stats().currentUs<=50,
+              "a decreasing layer stays inside normal 0.5-percent-per-interval release");
+        const auto current=down.stats().currentUs;
+        down.advance(1000000+f*10000+1000);
+        down.advance(1000000+f*10000+2000);
+        // Mirror decision-time calls: neither path may spend an interval twice.
+        normal.advance(1000000+f*10000+1000);
+        normal.advance(1000000+f*10000+2000);
+        check(down.stats().currentUs==normal.stats().currentUs && current-down.stats().currentUs<=50,
+              "repeated layer-drain decisions preserve the ordinary interval allowance");
+        previous=down.stats().currentUs;
+    }
+    check(down.stats().currentUs==1000,"a normal downward transition reaches its saved target promptly");
+    InputPercentileBuffer up; up.reset(6000); observe(up,1,9000); up.transitionFrom(1000);
+    check(up.stats().currentUs==6000,"only an increasing learned layer can restore a large buffer immediately");
+    InputPercentileBuffer small; small.reset(1300); observe(small,1,9000); small.transitionFrom(1000);
+    observe(small,2,9000);
+    check(small.stats().currentUs==1010,"small increases retain the normal configured rise rate");
+    InputPercentileBuffer growth;growth.reset(1000);
+    for(uint64_t f=1;f<=399;++f) observe(growth,f,9000,f==10 || f==399);
+    const auto before=growth.stats().currentUs;
+    observe(growth,400,9000);
+    check(growth.stats().targetUs>growth.stats().currentUs && growth.stats().currentUs==before+10,
+          "a fresh miss keeps normal growth responsive across the percentage boundary");
+    const auto validCount=growth.stats().eligible;
+    const auto beforeInvalid=growth.stats().currentUs;
+    observe(growth,401,9000,false,false);
+    check(growth.stats().eligible==validCount && growth.stats().currentUs==beforeInvalid,
+          "invalid input cannot fund faster growth");
+    Vrr13::ExtraBufferSlew extra;
+    extra.begin(0,1000000,6000,500,1000,false,false,false);
+    for (uint64_t f=1;f<=100;++f) {
+        extra.begin(f,1000000+f*10000,6000-f*50,500,1000,false,false,false);
+        extra.smoothing(0);
+    }
+    check(extra.smoothing(0)==500,
+          "normal input release cannot accumulate debt that freezes extra-delay recovery");
 }
 void testSharedExtraBufferAllowance() {
     for(const uint64_t tolerance : {250,500,2000}) {
@@ -1082,7 +1177,7 @@ void testActualControllerRequiresAnInputHitch() {
     session.latencyMode=1;session.smoothFrameTiming=false;session.experimentalInputPercentilePpm=1;
     session.timingOptions={1000,9950,10,500};
     auto base=vrrTimingParametersForSession(session);
-    check(base.playoutInputHitchMissesOnly==9,"production input goals select fast layers and gradual adaptation");
+    check(base.playoutInputHitchMissesOnly==10,"production input goals select fast layers and gradual adaptation");
     base.playoutDelayStartSeedUs=1000;base.playoutDelayMinimumUs=1000;base.playoutDelayMaximumUs=6000;
     base.playoutDelayMaximumPeriodPerMille=base.playoutDelayCapSourcePeriodPerMille=0;
     base.playoutInputLearningTrim=0;
@@ -1225,10 +1320,11 @@ void testActualControllerOptInAndEligibility() {
 
 }
 int main() {
-    testFastLayerCadence();testConfirmedLayerCadence();testContinuousCoverage();
+    testFastLayerCadence();testConfirmedLayerCadence();testContinuousCoverage();testResponsiveCoverageReporting();
     testGradualLayerGrowthAndHealthyRelease();
     testFeedbackBoundedRelease();
     testAsymmetricLayerBufferMovement();
+    testNormalDrainAfterLayerRework();
     testSharedExtraBufferAllowance();
     testOnlyPreventableHitchesScoreAndGrow();
     testAppliedProtectionFollowsClockCoordinate();
@@ -1245,6 +1341,7 @@ int main() {
     testFastControllerLayerRoundTrip(7);testFastControllerLayerRoundTrip(8);
     testFastControllerLayerRoundTrip(8,true);
     testFastControllerLayerRoundTrip(9);testFastControllerLayerRoundTrip(9,true);
+    testFastControllerLayerRoundTrip(10);testFastControllerLayerRoundTrip(10,true);
     testOrdinaryVariationKeepsLayer();
     testRateBaselineStepIsNotClockDrift();
     testActualControllerInputMissReleaseFeedbackApi();

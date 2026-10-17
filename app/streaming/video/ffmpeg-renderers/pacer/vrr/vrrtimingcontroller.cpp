@@ -222,7 +222,7 @@ VrrTimingParameters vrrTimingParametersForSession(
     // Direct empirical controllers are evaluated separately before UI semantics change.
     parameters.playoutAbsorbedJitterRelease = 0;
     parameters.playoutInputPercentileEnabled = config.experimentalInputPercentilePpm != 0;
-    parameters.playoutInputHitchMissesOnly = parameters.playoutInputPercentileEnabled ? 9 : 0;
+    parameters.playoutInputHitchMissesOnly = parameters.playoutInputPercentileEnabled ? 10 : 0;
     parameters.boundedCatchupEnabled = config.experimentalBoundedCatchup;
     parameters.normalizedSourceMapping = config.experimentalBoundedCatchup;
     if (parameters.boundedCatchupEnabled) {
@@ -250,10 +250,6 @@ VrrTimingParameters vrrTimingParametersForSession(
             uint64_t(options.historySeconds) * 1000000, 10000000, 300000000);
         parameters.playoutInputPercentileRiseUsPerSecond = std::clamp<uint64_t>(
             config.experimentalInputPercentileRiseUsPerSecond, 250, 1000);
-        parameters.playoutInputPercentileRiseUsPerSecond = std::min<uint64_t>(
-            parameters.playoutInputPercentileRiseUsPerSecond, options.toleranceUs);
-        parameters.playoutInputPercentileFallUsPerSecond = std::min<uint64_t>(
-            parameters.playoutInputPercentileFallUsPerSecond, options.toleranceUs);
     }
     // Late-frame recovery is independent of optional source-cadence smoothing.
     parameters.playoutCatchupPerMille = 20;
@@ -1026,7 +1022,8 @@ VrrTimingDecision VrrTimingController::schedule(const PacedFrame& frame,
     if (limitedBuffers) {
         m_ExtraBufferSlew.begin(uint64_t(frame.frameNumber()), nowUs, playoutDelayUs,
             intervalQualityToleranceUs(m_Parameters), int64_t(absorbReserveUs()),
-            m_BufferLayerChanged, m_BufferLayerDrain);
+            m_BufferLayerChanged, m_BufferLayerDrain && m_Parameters.playoutInputHitchMissesOnly < 10,
+            m_Parameters.playoutInputHitchMissesOnly < 10);
         smoothingUs = m_ExtraBufferSlew.smoothing(smoothingUs);
         m_LastSmoothingRetimingUs = smoothingUs - int64_t(smoothingReserveUs);
     }
@@ -4201,7 +4198,7 @@ void VrrTimingController::updatePlayoutHistory(
                 }
                 // Retire expired evidence at the decision, including the first
                 // frame after quiet time; this adds no new jitter observation.
-                if (m_Parameters.playoutInputHitchMissesOnly >= 9) {
+                if (m_Parameters.playoutInputHitchMissesOnly == 9) {
                     const uint64_t sinceDrop = m_InputRateDropAtUs && nowUs >= m_InputRateDropAtUs ?
                         nowUs - m_InputRateDropAtUs : UINT64_MAX;
                     const bool settling = sinceDrop < 10000000 &&

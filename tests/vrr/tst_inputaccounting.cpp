@@ -138,7 +138,7 @@ void rateDropFollow() {
 int main(){
  VrrSessionConfig cfg;cfg.streamRateHz=76;cfg.displayRefreshHz=120;cfg.latencyMode=0;cfg.experimentalInputPercentilePpm=1;cfg.experimentalBoundedCatchup=true;cfg.timingOptions={4000,9995,300,500};
  auto p=vrrTimingParametersForSession(cfg);VrrTimingController c(cfg,true,p);
- check(p.playoutInputHitchMissesOnly==9,"new sessions use fast rate layers while historical clock comparisons remain explicit");
+ check(p.playoutInputHitchMissesOnly==10,"new sessions use fast rate layers while historical clock comparisons remain explicit");
  check(p.playoutInputClockRelativeHistory==3&&p.playoutInputBoundedRecoveryCredit==0&&p.playoutInputRateDropSnap==1&&
        p.playoutInputLayerSeedRatioPerMille==1500&&p.playoutInputLearningTrim==1,"current main enables corrected accounting with physical recovery credit");
  check(p.playoutInputRecoveryCreditRoomPerMille==50&&c.recoveryHeadroomUs()>4800&&

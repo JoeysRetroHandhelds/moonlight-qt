@@ -338,8 +338,9 @@ SDL_Surface* composeTimingGraph(TTF_Font* font, SDL_Surface* text, const TimingG
             std::snprintf(coverage, sizeof(coverage), "%.2f%%",
                 100.0 * (latestPoint.inputSamples - std::min(latestPoint.inputSamples, latestPoint.inputMissed)) / latestPoint.inputSamples);
         else std::snprintf(coverage, sizeof(coverage), "N/A");
-        std::snprintf(caption, sizeof(caption), "Coverage %s | frames %llu | absorbed %llu | misses %llu",
-            coverage,
+        std::snprintf(caption, sizeof(caption), "Coverage (%llus) %s | frames %llu | absorbed %llu | misses %llu",
+            static_cast<unsigned long long>((latestPoint.inputCoverageWindowUs ?
+                latestPoint.inputCoverageWindowUs : latestPoint.inputWindowUs) / 1000000), coverage,
             static_cast<unsigned long long>(latestPoint.inputSamples),
             static_cast<unsigned long long>(latestPoint.inputAbsorbed),
             static_cast<unsigned long long>(latestPoint.inputMissed));

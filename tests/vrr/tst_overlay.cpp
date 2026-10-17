@@ -229,14 +229,14 @@ static void testAdaptiveProducerCoverage()
     in.networkReadyUs=1000500; in.decoderOutputUs=1008000; in.decoderReadyUs=1009000;
     in.inputPercentileEnabled=true; in.producerEligible=true; in.producerRequiredUs=2000; in.inputToleranceUs=750;
     in.inputTargetUs=1500; in.inputTargetValid=true; in.inputTargetCapped=true;
-    in.inputProbabilityPpm=995000; in.inputWindowUs=200000000;
+    in.inputProbabilityPpm=995000; in.inputWindowUs=200000000; in.inputCoverageWindowUs=10000000;
     in.inputSamples=301; in.inputAbsorbed=297; in.inputMissed=4; in.trajectoryCarryUs=6690;
     history.record(in); TimingGraphSnapshot snapshot; history.copyTo(snapshot);
     assert(snapshot.points.size()==1);
     const auto& p=snapshot.points[0];
     assert(p.producerRequiredUs==in.producerRequiredUs && p.producerEligible && p.inputPercentileEnabled);
     assert(p.inputTargetUs==1500 && p.inputTargetUs!=p.bufferUs && p.inputTargetUs!=p.requestedBufferUs);
-    assert(p.inputTargetValid && p.inputTargetCapped && p.inputProbabilityPpm==995000 && p.inputWindowUs==200000000 && p.inputToleranceUs==750);
+    assert(p.inputTargetValid && p.inputTargetCapped && p.inputProbabilityPpm==995000 && p.inputWindowUs==200000000 && p.inputCoverageWindowUs==10000000 && p.inputToleranceUs==750);
     assert(p.inputSamples==301 && p.inputAbsorbed==297 && p.inputMissed==4 && p.trajectoryCarryUs==6690);
     auto sample=bufferGraphSample(p);
     assert(sample.producerAbsorbed() && !sample.producerMissed());
@@ -881,6 +881,8 @@ int main(int argc, char** argv)
                 summary.nowUs = 5000000; summary.input.samples = summary.input.recentEligible = 22000;
                 summary.input.recentMissed = 11; summary.input.targetUs = 5420; summary.input.windowUs = 300000000;
                 summary.input.tailUncertain = false;
+                summary.input.reportingWindowUs=10000000;summary.input.reportingEligible=1100;
+                summary.input.reportingAbsorbed=20;summary.input.reportingMissed=2;
                 auto coherent = adaptiveGraph(6959, true, true);
                 Vrr13::PresentTiming matchedDisplay;
                 BufferHitchHistory stageHistory;
@@ -898,9 +900,10 @@ int main(int argc, char** argv)
                     point.toleranceUs = point.inputToleranceUs = summary.toleranceUs;
                     point.inputVrrHeadroomUs = 760;
                     point.inputProbabilityPpm = summary.targetPpm; point.inputWindowUs = summary.input.windowUs;
-                    point.inputSamples = summary.input.recentEligible;
-                    point.inputAbsorbed = summary.input.recentAbsorbed;
-                    point.inputMissed = summary.input.recentMissed;
+                    point.inputCoverageWindowUs = summary.input.reportingWindowUs;
+                    point.inputSamples = summary.input.reportingEligible;
+                    point.inputAbsorbed = summary.input.reportingAbsorbed;
+                    point.inputMissed = summary.input.reportingMissed;
                     // Actual synthetic display identities drive both the plot
                     // and the summary observer; neither uses input coverage.
                     if (i >= 19) {

@@ -28,6 +28,16 @@ int main(int argc, char** argv)
     assert(std::count(text.begin(), text.end(), '\n') == 3);
     if (argc > 1 && std::string(argv[1]) == "--fixture") { std::cout << text; return 0; }
 
+    // A short reporting window responds independently of the profile history.
+    s.input.reportingWindowUs=10000000;s.input.reportingEligible=1000;
+    s.input.reportingMissed=0;
+    assert(has(formatVrr(s), "coverage (10s) 100.00% / 99.95% | 300s 99.95%"));
+    s.input.reportingMissed=2;
+    assert(has(formatVrr(s), "coverage (10s) 99.80% / 99.95% | 300s 99.95%"));
+    s.input.reportingEligible=0;
+    assert(has(formatVrr(s), "coverage (10s) N/A / 99.95% | 300s 99.95%"));
+    s.input.reportingWindowUs=0;
+
     // A legitimate measured zero differs from missing or stale feedback.
     s.present.misses = 0;
     assert(has(formatVrr(s), "Present timing issues (30s): 0.00% >0.50 ms"));

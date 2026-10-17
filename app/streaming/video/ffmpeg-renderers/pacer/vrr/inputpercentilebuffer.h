@@ -46,6 +46,9 @@ public:
         // The controller's policy-8 telemetry substitutes its session-wide
         // trailing outcomes here; this buffer's internal counters stay local.
         uint64_t recentEligible = 0, recentAbsorbed = 0, recentMissed = 0;
+        // Reporting only: recent responsiveness alongside the full learning history.
+        uint64_t reportingWindowUs = 0, reportingEligible = 0;
+        uint64_t reportingAbsorbed = 0, reportingMissed = 0;
         uint64_t raises = 0, lowers = 0, unknownRelease = 0, epochResets = 0;
         uint64_t observationSpanUs = 0, validPairCoverageUs = 0;
         uint64_t probabilityPpm = 0, windowUs = 0, toleranceUs = 0, vrrHeadroomUs = 0;
@@ -197,8 +200,9 @@ public:
         if (previousMappingUs != mappingUs) restartReleaseFeedback();
     }
     // Selecting a layer restores its learned buffer, but only a substantial
-    // increase may jump. A decrease retains the applied buffer and spends at
-    // most T per fresh source frame; a difference within T uses ordinary slew.
+    // increase may jump. A decrease keeps the applied buffer and its learned
+    // destination while normal release drains it. Recorded policy 9 instead
+    // spends at most T per fresh source frame.
     void transitionFrom(uint64_t previousUs) {
         if (m_HitchMissesOnly < 9) return;
         const uint64_t learnedUs = m_Stats.currentUs;
@@ -433,7 +437,9 @@ private:
         m_Stats.clockOffsetUs = clockOffset;
         m_RiseRate = std::min<uint64_t>(riseRate, 1000000);
         m_FallRate = std::min<uint64_t>(fallRate, 1000000);
-        if (m_HitchMissesOnly >= 9) {
+        // Policy 9 accidentally changed ordinary adaptation as well as layers.
+        // Policy 10 restores the pre-existing rise and healthy release law.
+        if (m_HitchMissesOnly == 9) {
             m_RiseRate = std::min(m_RiseRate, tolerance);
             m_FallRate = std::min(m_FallRate, tolerance);
         }
@@ -496,7 +502,7 @@ private:
         m_Stats.releaseFactorPpm = 1000000;
         m_Stats.effectiveFallRateUsPerSecond = m_FallRate;
         m_Stats.effectiveFallRateMilliUsPerSecond = m_FallRate * 1000;
-        if (canProbeRelease() && (m_HitchMissesOnly < 9 || m_EvidenceBackedRelease)) {
+        if (canProbeRelease() && (m_HitchMissesOnly != 9 || m_EvidenceBackedRelease)) {
             // Release at no more than 0.5% of source cadence, half the selected
             // tolerance, and the available VRR credit per interval. Presentation
             // recovery still enforces the shared physical/cadence floor.
@@ -505,7 +511,7 @@ private:
             uint64_t rate = step * 1000000 / m_ReleaseIntervalUs;
             // Measured surplus may drain faster than a speculative trial, but
             // never faster than the selected growth rate in the current layer.
-            if (m_HitchMissesOnly >= 9) rate = std::min(rate, m_RiseRate);
+            if (m_HitchMissesOnly == 9) rate = std::min(rate, m_RiseRate);
             m_Stats.effectiveFallRateUsPerSecond = std::max(m_FallRate, rate);
             m_Stats.effectiveFallRateMilliUsPerSecond = m_Stats.effectiveFallRateUsPerSecond * 1000;
         }
@@ -647,7 +653,7 @@ private:
         // met, including on slower rate layers. Once preventable hitches put
         // it below goal, that room did not prevent them and cannot discount
         // the protection needed to cover their input tail.
-        const uint64_t credit = m_HitchMissesOnly >= 9 || (m_HitchMissesOnly && belowMissGoal) ?
+        const uint64_t credit = m_HitchMissesOnly == 9 || (m_HitchMissesOnly && belowMissGoal) ?
             0 : m_Stats.vrrHeadroomUs;
         uint64_t requested = excess - std::min(excess, credit);
         if (m_HitchMissesOnly >= 2 && belowMissGoal) {
@@ -669,7 +675,7 @@ private:
             const uint64_t authorized = m_HitchMissesOnly >= 9 && m_Stats.recentReleaseMisses ?
                 std::max(m_Stats.currentUs, previousTargetUs) : m_Stats.currentUs;
             m_Stats.targetUs = std::min(m_Stats.targetUs, authorized);
-            if (m_HitchMissesOnly < 9 && canProbeRelease()) {
+            if (m_HitchMissesOnly != 9 && canProbeRelease()) {
                 // A raw late-input quantile is not proof that this protection
                 // remains necessary. Try a small reduction while actual input
                 // hitch coverage is healthy; fresh misses stop the probe.
@@ -692,9 +698,9 @@ private:
                     m_LayerTransitionTargetUs = std::min(m_LayerTransitionTargetUs, m_Stats.targetUs);
                 m_Stats.targetUs = std::clamp(m_LayerTransitionTargetUs, m_Stats.minimumUs, m_Stats.maximumUs);
             }
-            else applyFeedbackBoundedRelease(atUs,
+            else if (m_HitchMissesOnly == 9) applyFeedbackBoundedRelease(atUs,
                     std::clamp(requested, m_Stats.minimumUs, m_Stats.maximumUs));
-            updateReleaseRate(m_Stats.recentReleaseMisses);
+            if (m_HitchMissesOnly == 9) updateReleaseRate(m_Stats.recentReleaseMisses);
         }
     }
     void move(uint64_t elapsed, bool growthAllowed) {
@@ -706,7 +712,7 @@ private:
         if (!direction || (direction > 0 && !growthAllowed)) return;
         if (direction < 0 && m_RateDropDrain &&
             m_Stats.currentUs - m_Stats.targetUs > m_Stats.toleranceUs) m_RateDropFastDrain = true;
-        if (direction < 0 && m_HitchMissesOnly >= 9 && fastLayerDrain()) {
+        if (direction < 0 && m_HitchMissesOnly == 9 && fastLayerDrain()) {
             const uint64_t movement = std::min(m_LayerDrainStepRemainingUs,
                 m_Stats.currentUs - m_Stats.targetUs);
             m_LayerDrainStepRemainingUs -= movement;

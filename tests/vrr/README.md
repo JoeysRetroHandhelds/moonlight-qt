@@ -1895,3 +1895,22 @@ must continue to exclude current input readiness so late inputs remain visible.
 Local test-build artifacts and logs are under `build/buffer-rate-fix/`. These are
 deterministic contract checks, not trace replay or proof of displayed fluidity.
 The user has deferred replay simulations for this iteration.
+
+### Layer decreases use normal release (input policy 10)
+
+Policy 10 preserves the confirmed layer-selection rework, upward learned-buffer
+restoration and continuous history, while restoring normal continuous input
+release. `inputpercentileintegration` compares healthy release and targets with
+policy 8 at 30/120 FPS, checks ordinary downward-layer release against the same
+code at steady rate, upward-only jumps, small normal growth, shared per-interval
+allowances, fresh-miss interruption and input/extra-delay independence. Policy 9
+fixtures retain its historical slow trials and T/frame layer drain. Live-controller
+round trips cover policy 10 with smoothing on and off. Replay configuration
+round-trips policies 9 and 10 and rejects unsupported versions.
+
+Coverage reporting has a separate 10 s window alongside the selected learning
+history. Tests cover fresh misses, expiry, invalid and stale callbacks, no fake
+success during idle spans, and session resets. Overlay fit fixtures exercise the
+recent and full-history scores together at Deck and 4K sizes. Artifacts for this
+correction are under `build/layer-drain-correction/`. Deterministic checks do not
+establish physical display smoothness.

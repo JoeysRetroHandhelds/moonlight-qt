@@ -42,11 +42,10 @@ VrrSessionConfig experimentalInputConfig(VrrSessionConfig config)
     config.experimentalInputPercentileWindowUs =
         uint64_t(config.timingOptions.resolved(config.latencyMode).historySeconds) * 1000000;
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-        "Adaptive buffer: profile smoothness %.2f%% selects input readiness percentile; history %llu s, rise %llu us/s, all adaptive buffer movement capped at tolerance/s; layers at least 30 FPS apart, upward restore or T/frame drain; fixed 2T Absorb pad (input policy 9); interval severity score remains distinct",
+        "Adaptive buffer: profile smoothness %.2f%% selects input readiness percentile; history %llu s, rise %llu us/s, normal healthy input release; layers at least 30 FPS apart, upward restore or normal downward drain; fixed 2T Absorb pad (input policy 10); interval severity score remains distinct",
         config.experimentalInputPercentilePpm / 10000.0,
         static_cast<unsigned long long>(config.experimentalInputPercentileWindowUs / 1000000),
-        static_cast<unsigned long long>(std::min<uint64_t>(config.experimentalInputPercentileRiseUsPerSecond,
-            config.timingOptions.resolved(config.latencyMode).toleranceUs)));
+        static_cast<unsigned long long>(std::clamp<uint64_t>(config.experimentalInputPercentileRiseUsPerSecond, 250, 1000)));
     return config;
 }
 
@@ -1049,9 +1048,10 @@ int VrrPacingWorker::run()
             sample.graph.inputWindowUs = input.windowUs;
             // Profile allowance remains known while reset evidence is unavailable.
             sample.graph.inputToleranceUs = m_TimingController->parameters().playoutInputPercentileToleranceUs;
-            sample.graph.inputSamples = input.recentEligible;
-            sample.graph.inputAbsorbed = input.recentAbsorbed;
-            sample.graph.inputMissed = input.recentMissed;
+            sample.graph.inputCoverageWindowUs = input.reportingWindowUs;
+            sample.graph.inputSamples = input.reportingWindowUs ? input.reportingEligible : input.recentEligible;
+            sample.graph.inputAbsorbed = input.reportingWindowUs ? input.reportingAbsorbed : input.recentAbsorbed;
+            sample.graph.inputMissed = input.reportingWindowUs ? input.reportingMissed : input.recentMissed;
             sample.graph.trajectoryCarryUs = decision.trajectory.carryUs;
             sample.graph.toleranceUs = m_TimingController->intervalToleranceUs();
             sample.graph.sourceTimeUs = decision.sourceTimeUs;

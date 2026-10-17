@@ -26,6 +26,7 @@ struct TimingGraphInput {
     int64_t producerRequiredUs = 0;
     uint64_t inputTargetUs = 0, inputProbabilityPpm = 0, inputWindowUs = 0, inputToleranceUs = 0, inputVrrHeadroomUs = 0;
     uint64_t inputSamples = 0, inputAbsorbed = 0, inputMissed = 0, trajectoryCarryUs = 0;
+    uint64_t inputCoverageWindowUs = 0;
     bool inputPercentileEnabled = false, producerEligible = false;
     bool inputTargetValid = false, inputTargetCapped = false;
 
@@ -55,6 +56,7 @@ struct TimingGraphPoint {
     int64_t producerRequiredUs = 0;
     uint64_t inputTargetUs = 0, inputProbabilityPpm = 0, inputWindowUs = 0, inputToleranceUs = 0, inputVrrHeadroomUs = 0;
     uint64_t inputSamples = 0, inputAbsorbed = 0, inputMissed = 0, trajectoryCarryUs = 0;
+    uint64_t inputCoverageWindowUs = 0;
     bool inputPercentileEnabled = false, producerEligible = false;
     bool inputTargetValid = false, inputTargetCapped = false;
 
@@ -273,6 +275,7 @@ public:
             p.inputTargetUs = in.inputTargetUs; p.inputTargetValid = in.inputTargetValid;
             p.inputTargetCapped = in.inputTargetCapped;
             p.inputProbabilityPpm = in.inputProbabilityPpm; p.inputWindowUs = in.inputWindowUs;
+            p.inputCoverageWindowUs = in.inputCoverageWindowUs;
             p.inputToleranceUs = in.inputToleranceUs;
             p.inputVrrHeadroomUs = in.inputVrrHeadroomUs;
             p.inputSamples = in.inputSamples; p.inputAbsorbed = in.inputAbsorbed;

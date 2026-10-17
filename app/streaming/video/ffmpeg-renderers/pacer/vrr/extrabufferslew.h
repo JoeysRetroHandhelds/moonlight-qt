@@ -4,14 +4,17 @@
 #include <cstdint>
 
 namespace Vrr13 {
-// One movement allowance shared by the input buffer and intentional extra
-// delay. Physical readiness/ownership floors are applied by the caller after
+// One movement allowance for intentional extra delay. Recorded policy 9
+// also charges input-buffer movement; policy 10 leaves input adaptation to
+// its normal release law without accumulating extra-delay movement debt.
+// Physical readiness/ownership floors are applied by the caller after
 // this policy: a frame cannot be displayed before it exists or owns scanout.
 class ExtraBufferSlew {
 public:
     void reset() { *this = ExtraBufferSlew{}; }
     void begin(uint64_t frame, uint64_t nowUs, uint64_t inputUs, uint64_t toleranceUs,
-               int64_t initialPadUs, bool layerChanged, bool layerDrain) {
+               int64_t initialPadUs, bool layerChanged, bool layerDrain,
+               bool shareInputMovement = true) {
         if (!m_Initialized) {
             m_Initialized = true;
             m_SmoothingUs = initialPadUs;
@@ -33,7 +36,7 @@ public:
             m_DrainRemainingUs -= std::min(m_DrainRemainingUs, change);
             m_OrdinaryRemainingUs -= std::min(m_OrdinaryRemainingUs, change);
         }
-        else if (!(layerChanged && inputUs > m_InputUs))
+        else if (shareInputMovement && !(layerChanged && inputUs > m_InputUs))
             m_OrdinaryDebtUs += change;
         const uint64_t paid = std::min(m_OrdinaryRemainingUs, m_OrdinaryDebtUs);
         m_OrdinaryRemainingUs -= paid;
