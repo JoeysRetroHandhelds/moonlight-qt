@@ -1117,6 +1117,9 @@ void testRateBaselineStepIsNotClockDrift() {
         session.experimentalBoundedCatchup=true;
         session.experimentalInputPercentilePpm=995000;session.timingOptions={1000,9950,120,500};
         auto policy=vrrTimingParametersForSession(session);
+        // Compare the historical producer-clock policies explicitly. New live
+        // sessions use the independently tested packet-receive clock (mode 4).
+        policy.playoutInputClockRelativeHistory=3;
         policy.playoutInputHitchMissesOnly=version;policy.playoutInputStableAdaptation=version>=10;policy.latencyFixEnabled=0;
         policy.playoutDelayStartSeedUs=1000;
         VrrTimingController c(session,true,policy);
