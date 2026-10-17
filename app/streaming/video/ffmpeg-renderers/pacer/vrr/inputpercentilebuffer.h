@@ -96,6 +96,10 @@ public:
     // Observation-clock timestamp of usable evidence. Ineligible outcomes
     // update diagnostics but cannot extend the learning history's lifetime.
     uint64_t lastEligibleObservationUs() const { return m_LastEligibleUs; }
+    uint64_t reacquisitionRemaining() const { return m_ReacquisitionRemaining; }
+    uint64_t reacquisitionUntilUs() const { return m_ReacquisitionUntilUs; }
+    struct SlewAudit { uint64_t atUs=0, authorizedTargetUs=0, beforeUs=0; int64_t deltaUs=0; };
+    SlewAudit lastSlewAudit() const { return m_SlewAudit; }
     bool layerTransitionActive() const { return m_LayerTransitionActive; }
     bool fastLayerDrain() const { return (m_LayerTransitionActive && m_LayerFastDrain) ||
         (m_RateDropDrain && m_RateDropFastDrain); }
@@ -759,6 +763,18 @@ private:
         }
     }
     void move(uint64_t elapsed, bool growthAllowed) {
+        m_SlewAudit={m_LastClockUs,
+            !growthAllowed && m_Stats.targetUs>m_Stats.currentUs ? m_Stats.currentUs : m_Stats.targetUs,
+            m_Stats.currentUs,0};
+        struct FinishAudit {
+            Stats& stats; SlewAudit& audit;
+            ~FinishAudit() {
+                const bool up=stats.currentUs>=audit.beforeUs;
+                const uint64_t delta=up?stats.currentUs-audit.beforeUs:audit.beforeUs-stats.currentUs;
+                const int64_t bounded=int64_t(std::min(delta,uint64_t(std::numeric_limits<int64_t>::max())));
+                audit.deltaUs=up?bounded:-bounded;
+            }
+        } finishAudit{m_Stats,m_SlewAudit};
         const int direction = m_Stats.targetUs > m_Stats.currentUs ? 1 :
             m_Stats.targetUs < m_Stats.currentUs ? -1 : 0;
         if (direction != m_Direction) m_ReleaseFraction = 0;
@@ -833,6 +849,7 @@ private:
     Stats m_Stats;
     uint64_t m_FirstObservationUs = 0, m_LastObservationUs = 0, m_LastEligibleUs = 0;
     uint64_t m_LastClockUs = 0, m_RiseRate = 0, m_FallRate = 0;
+    SlewAudit m_SlewAudit;
     uint64_t m_LastEvaluationUs = 0, m_LastTruncatedUs = 0, m_Epoch = 0;
     uint64_t m_PreviousFrame = 0, m_PreviousSlotUs = 0;
     uint64_t m_EvaluatedProbabilityPpm = 0, m_EvaluatedWindowUs = 0, m_ReleaseFraction = 0;

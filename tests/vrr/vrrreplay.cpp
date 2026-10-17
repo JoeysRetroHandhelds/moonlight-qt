@@ -282,6 +282,11 @@ enum class TraceValueKind {
 
 TraceValueKind traceValueKind(const QByteArray& name)
 {
+#define VRR_AUDIT_COLUMN_KIND(type,jsonName,member) \
+    if constexpr(std::is_signed<type>::value) \
+        if(name=="buffer_before_" #jsonName || name=="buffer_after_" #jsonName) return TraceValueKind::Signed;
+    VRR_BUFFER_AUDIT_FIELDS(VRR_AUDIT_COLUMN_KIND)
+#undef VRR_AUDIT_COLUMN_KIND
     static const QSet<QByteArray> signedColumns {
         "trajectory_successor_frame",
         "input_percentile_last_input_required_us",
@@ -1774,6 +1779,9 @@ struct RasterEnvelopeMetrics {
 };
 
 struct Metrics {
+    uint64_t bufferAuditComparedRows=0, bufferAuditMismatchedRows=0;
+    QMap<QString,uint64_t> bufferAuditFieldMismatches;
+    QJsonArray bufferAuditFirstMismatches;
     Vrr13::ReadinessWindow observedReadiness;
     Vrr13::ReadinessWindow simulatedReadiness;
     uint64_t feedbackCapacityLimitedFrames = 0;
@@ -6309,7 +6317,13 @@ QJsonObject summaryObject(const Metrics& metrics, qint64 elapsedMs,
             metrics.exactPresentRefreshCorrelations;
     fidelity["invalid_execution_residuals"] = static_cast<qint64>(
         metrics.invalidExecutionResiduals);
+    fidelity["buffer_audit_compared_rows"] = qint64(metrics.bufferAuditComparedRows);
+    fidelity["buffer_audit_mismatched_rows"] = qint64(metrics.bufferAuditMismatchedRows);
+    QJsonObject auditFields;for(auto it=metrics.bufferAuditFieldMismatches.begin();it!=metrics.bufferAuditFieldMismatches.end();++it) auditFields[it.key()]=qint64(it.value());
+    fidelity["buffer_audit_field_mismatches"]=auditFields;
+    fidelity["buffer_audit_first_mismatches"]=metrics.bufferAuditFirstMismatches;
     fidelity["baseline_exact"] = metrics.traceSchema == 5 &&
+        metrics.bufferAuditMismatchedRows == 0 &&
         arrivalSequenceComplete &&
         semanticIntegrityReady &&
         metrics.displayRefreshMismatchRows == 0 &&
@@ -7351,6 +7365,11 @@ QJsonObject summaryObject(const Metrics& metrics, qint64 elapsedMs,
 }
 
 struct TimelineDetails {
+    bool bufferAuditValid = false;
+    uint32_t sourceRtp = 0;
+    bool sourceRtpValid = false;
+    VrrBufferAuditSnapshot bufferBefore, bufferAfter;
+    Vrr13::IntervalBuffer::Stats feedbackStats;
     uint64_t decoderOutputUs = 0;
     int recordedSourceRateHz = 0;
     int simulatedSourceRateHz = 0;
@@ -7730,7 +7749,15 @@ bool writeTimelineHeader(QFile& file)
         "recorded_free_running_scanout_position_ppm,"
         "simulated_free_running_scanout_position_valid,"
         "simulated_free_running_scanout_position_ppm,"
-        "simulated_presentation_floor_push_us,simulated_recovery_added_us\n";
+        "simulated_presentation_floor_push_us,simulated_recovery_added_us"
+        ",trace_model_kind,rtp_timestamp,rtp_valid,buffer_audit_revision"
+#define VRR_TIMELINE_BEFORE_HEADER(type,name,member) ",buffer_before_" #name
+        VRR_BUFFER_AUDIT_FIELDS(VRR_TIMELINE_BEFORE_HEADER)
+#undef VRR_TIMELINE_BEFORE_HEADER
+#define VRR_TIMELINE_AFTER_HEADER(type,name,member) ",buffer_after_" #name
+        VRR_BUFFER_AUDIT_FIELDS(VRR_TIMELINE_AFTER_HEADER)
+#undef VRR_TIMELINE_AFTER_HEADER
+        ",buffer_update_frame,buffer_attributed_frame,buffer_interval_error_us,buffer_lateness_us,input_percentile_last_input_eligible,input_percentile_last_input_required_us,input_percentile_recent_eligible,input_percentile_recent_missed\n";
     return file.write(header) == header.size();
 }
 
@@ -8134,6 +8161,26 @@ bool writeTimelineRow(QFile& file, uint64_t arrivalSequence, int frame,
         details.simulatedRaster.freeRunningScanoutPositionPpm));
     append(QByteArray::number(details.simulatedPresentationFloorPushUs));
     append(QByteArray::number(details.simulatedRecoveryAddedUs));
+    append(QByteArray("1")); // Frozen recorded-admission replay, not closed loop.
+    append(QByteArray::number(details.sourceRtp));
+    append(QByteArray::number(details.sourceRtpValid?1:0));
+    append(QByteArray::number(details.bufferAuditValid?1:0));
+    const auto appendBufferAudit=[&](const VrrBufferAuditSnapshot&a) {
+#define VRR_TIMELINE_AUDIT_VALUE(type,name,member) \
+        if constexpr(std::is_signed<type>::value) append(QByteArray::number(static_cast<qlonglong>(a.member))); \
+        else append(QByteArray::number(static_cast<qulonglong>(a.member)));
+        VRR_BUFFER_AUDIT_FIELDS(VRR_TIMELINE_AUDIT_VALUE)
+#undef VRR_TIMELINE_AUDIT_VALUE
+    };
+    appendBufferAudit(details.bufferBefore);appendBufferAudit(details.bufferAfter);
+    append(QByteArray::number(qulonglong(details.feedbackStats.update.frame)));
+    append(QByteArray::number(qulonglong(details.feedbackStats.update.attributedFrame)));
+    append(QByteArray::number(qulonglong(details.feedbackStats.update.intervalErrorUs)));
+    append(QByteArray::number(qulonglong(details.feedbackStats.update.latenessUs)));
+    append(QByteArray::number(details.feedbackStats.inputPercentile.lastInputEligible?1:0));
+    append(QByteArray::number(qlonglong(details.feedbackStats.inputPercentile.lastInputRequiredUs)));
+    append(QByteArray::number(qulonglong(details.feedbackStats.inputPercentile.recentEligible)));
+    append(QByteArray::number(qulonglong(details.feedbackStats.inputPercentile.recentMissed)));
     line.append('\n');
     return file.write(line) == line.size();
 }
@@ -13473,8 +13520,13 @@ int main(int argc, char* argv[])
         }
         const VrrTimingDecision referenceDecision =
             referenceController->schedule(frame, decisionUs);
+        const auto referenceBufferBefore=referenceController->bufferAudit(decisionUs,referenceDecision.playoutDelayUs);
         const VrrTimingDecision simulatedDecision =
             simulatedController->schedule(frame, simulatedDecisionUs);
+        timelineDetails.bufferAuditValid=true;
+        timelineDetails.sourceRtp=frame.rtpTimestamp();
+        timelineDetails.sourceRtpValid=frame.timestampValid();
+        timelineDetails.bufferBefore=simulatedController->bufferAudit(simulatedDecisionUs,simulatedDecision.playoutDelayUs);
         if (traceContains("trajectory_resync_dropped")) {
             const bool resyncDrop=optionalUnsignedField(fields,traceColumn("trajectory_resync_dropped"))!=0;
             const bool resyncDeferred=optionalUnsignedField(fields,traceColumn("trajectory_resync_deferred"))!=0;
@@ -14178,6 +14230,22 @@ int main(int argc, char* argv[])
                 recordedSubmissionUs,
                 saturatingAdd(
                     priorSubmissionUs,
+                    unsignedField(fields, columns.displayPeriodUs)));
+        }
+        else if (normalPresentationLifecycle && !presented &&
+                 !nativeScheduledLifecycle && expectedHadPriorSubmission &&
+                 metrics.spacingLifecycleTimingTelemetryAvailable &&
+                 recordedSpacingRecheckUs != 0) {
+            // An attempted Present that returns dropped/cancelled retains the
+            // pre-call spacing check. recordSubmission() only overwrites these
+            // fields for successful presentations. Validate that retained
+            // boundary exactly; zeroing it would erase real worker evidence.
+            const uint64_t checkUs = recordedCorrectionWaitEndUs != 0 ?
+                recordedCorrectionWaitEndUs : recordedSpacingRecheckUs;
+            const uint64_t priorUs = referenceController->lastSubmissionUs();
+            expectedSubmissionSpacingUs = checkUs >= priorUs ? checkUs-priorUs : 0;
+            expectedSpacingMarginUs = signedDifference(checkUs,
+                saturatingAdd(spacingPriorSubmissionUs,
                     unsignedField(fields, columns.displayPeriodUs)));
         }
         metrics.submissionSpacingMismatches +=
@@ -15374,7 +15442,18 @@ int main(int argc, char* argv[])
             }
         }
 
+        const auto auditAfterAt=optionalUnsignedField(fields,traceColumn("buffer_after_at_us"));
+        VrrBufferAuditSnapshot referenceBufferAfter;
+        const auto captureBufferAfter=[&] {
+            referenceBufferAfter=referenceController->bufferAudit(auditAfterAt,referenceDecision.playoutDelayUs);
+            const auto at=(staleBeforeRenderLifecycle || staleAfterRenderLifecycle) ?
+                saturatingAdd(simulatedDecisionUs,positiveDifference(auditAfterAt,decisionUs)) :
+                saturatingAdd(simulatedSubmissionUs,positiveDifference(auditAfterAt,recordedSubmissionUs));
+            timelineDetails.bufferAfter=simulatedController->bufferAudit(at,simulatedDecision.playoutDelayUs);
+            timelineDetails.feedbackStats=simulatedController->intervalStats();
+        };
         if (staleBeforeRenderLifecycle || staleAfterRenderLifecycle) {
+            captureBufferAfter();
             // Both stale paths write their trace row before mutating the
             // controller. Compare the captured learned state at that same
             // point, then reproduce the mutation that affects the next row.
@@ -15469,6 +15548,31 @@ int main(int argc, char* argv[])
             simulatedController->notePresentation(observation);
         }
 
+        if (!staleBeforeRenderLifecycle && !staleAfterRenderLifecycle) captureBufferAfter();
+        if(optionalUnsignedField(fields,traceColumn("buffer_audit_revision"))>1)
+            ++metrics.bufferAuditMismatchedRows;
+        if(optionalUnsignedField(fields,traceColumn("buffer_audit_revision"))==1) {
+            ++metrics.bufferAuditComparedRows;
+            bool exact=true;
+            const auto checkAudit=[&](const char* name,auto expected) {
+                using Type=decltype(expected);
+                const QString key=QString::fromLatin1(name);
+                const auto recorded=std::is_signed<Type>::value ?
+                    QString::number(optionalSignedField(fields,traceColumn(name))) :
+                    QString::number(optionalUnsignedField(fields,traceColumn(name)));
+                const auto reconstructed=QString::number(expected);
+                if(recorded==reconstructed)return;
+                exact=false;++metrics.bufferAuditFieldMismatches[key];
+                if(metrics.bufferAuditFirstMismatches.size()<20)
+                    metrics.bufferAuditFirstMismatches.append(QJsonObject{{"frame",frameNumber},{"field",key},{"captured",recorded},{"reconstructed",reconstructed}});
+            };
+#define VRR_CHECK_CAPTURED_BUFFER_AUDIT(type,name,member) \
+            checkAudit("buffer_before_" #name,type(referenceBufferBefore.member)); \
+            checkAudit("buffer_after_" #name,type(referenceBufferAfter.member));
+            VRR_BUFFER_AUDIT_FIELDS(VRR_CHECK_CAPTURED_BUFFER_AUDIT)
+#undef VRR_CHECK_CAPTURED_BUFFER_AUDIT
+            metrics.bufferAuditMismatchedRows+=!exact;
+        }
         if (timelineFile.isOpen() &&
                 !writeTimelineRow(timelineFile, arrivalSequence,
                     frameNumber,

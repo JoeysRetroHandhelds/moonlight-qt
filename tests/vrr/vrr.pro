@@ -67,6 +67,8 @@ ratepolicy.file = $$PWD/ratepolicy.pro
 diagnostics.file = $$PWD/diagnostics.pro
 pacingworker.file = $$PWD/pacingworker.pro
 replay.file = $$PWD/replay.pro
+workerreplay.file = $$PWD/workerreplay.pro
+SUBDIRS += workerreplay
 replayconfig.file = $$PWD/replayconfig.pro
 queuesim.file = $$PWD/queuesim.pro
 

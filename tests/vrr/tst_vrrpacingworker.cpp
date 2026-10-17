@@ -3954,7 +3954,7 @@ void testTraceQueueConcurrency()
         expect(bounded.pop(value) && value == i, "trace queue must preserve order across wrap");
     uint64_t value = 0;
     expect(!bounded.pop(value), "an empty trace queue must reject immediately");
-    struct Row { uint64_t producer = 0, sequence = 0, checksum = 0; };
+    struct Row { uint64_t producer = 0, sequence = 0, checksum = 0; VrrBufferAuditSnapshot before, after; };
     Vrr13::TraceQueue<Row, 1024> queue;
     constexpr unsigned producers = 3, rows = 20000;
     std::array<std::thread, producers> threads;
@@ -3962,6 +3962,7 @@ void testTraceQueueConcurrency()
         threads[p] = std::thread([&, p] {
             for (unsigned i = 0; i < rows; ++i) {
                 Row row{p, i, (uint64_t(p) << 32) ^ i ^ 0xabcddcba};
+                row.before.atUs=i;row.before.layerId=p;row.after.currentUs=row.checksum;row.after.slewDeltaUs=-int64_t(i);
                 while (!queue.push(std::move(row))) std::this_thread::yield();
             }
         });
@@ -3974,6 +3975,7 @@ void testTraceQueueConcurrency()
         valid &= row.producer < producers;
         if (row.producer < producers) valid &= row.sequence == next[row.producer]++;
         valid &= row.checksum == ((row.producer << 32) ^ row.sequence ^ 0xabcddcba);
+        valid &= row.before.atUs==row.sequence && row.before.layerId==row.producer && row.after.currentUs==row.checksum && row.after.slewDeltaUs==-int64_t(row.sequence);
         ++i;
     }
     for (auto& thread : threads) thread.join();

@@ -1,4 +1,18 @@
-Offline exact-score experiment: interval-quality integer totals update on ring
+Buffer quality observability (2026-10-17, accepted base `75e97d26`):
+the CPU optimization and eligible-age/fresh-reacquisition correction are now
+separate local commits. The staged native A/B binaries remain unchanged.
+Decision-applied B (`playout_delay_us`) is distinct from the historical
+post-feedback controller snapshot. Opt-in `MOONLIGHT_VRR_BUFFER_AUDIT=1` adds
+typed before/after scalar snapshots, stable cached-layer identity, eligible
+evidence age, qualification/authorization reasons and normal slew budgets.
+The existing bounded asynchronous trace handoff owns formatting and accounting.
+Frozen-input `vrrreplay` and production-worker virtual-clock `vrrworkerreplay`
+answer different questions: only the latter recalculates admission/drops, and
+neither proves GPU/compositor/optical or network behavior. See
+[Buffer quality contracts](tests/vrr/BUFFER-QUALITY.md) for CLI, provenance,
+metrics, missing-evidence handling, predeclared workloads and overhead limits.
+
+Historical offline exact-score experiment: interval-quality integer totals update on ring
 mutation/expiry. Weighted sums retain the original physical-index floating-point
 addition order; sparse zero-only buckets are skipped. Reporting/control policy,
 source timing, target/window and scoring are unchanged. This experiment is not

@@ -1,4 +1,5 @@
 #pragma once
+#include "bufferaudit.h"
 #include "inputlayercadence.h"
 #include "inputcoveragehistory.h"
 #include "extrabufferslew.h"
@@ -539,6 +540,7 @@ public:
     uint64_t headroomUs() const;
     uint64_t sourcePeriodUs() const;
     uint64_t inputLayerPeriodUs() const { return m_InputLayerPeriodUs; }
+    VrrBufferAuditSnapshot bufferAudit(uint64_t nowUs, uint64_t appliedUs) const;
     uint64_t displayPeriodUs() const;
     uint64_t guardUs() const;
     uint64_t renderLeadUs() const;
@@ -888,10 +890,16 @@ private:
     struct InputLayer {
         uint64_t periodUs = 0;
         Vrr13::InputPercentileBuffer buffer;
+        uint64_t identity = 0;
     };
     enum class InputLayerChange { None, Restored, Created };
     std::vector<InputLayer> m_InputLayers;
     uint64_t m_InputLayerPeriodUs = 0;
+    // Diagnostic identities/counters never participate in layer selection.
+    uint64_t m_InputLayerIdentity = 0, m_NextInputLayerIdentity = 0;
+    uint64_t m_InputLayerSwitches = 0, m_InputLayerCreates = 0;
+    uint64_t m_InputLayerRestores = 0, m_InputLayerExpirations = 0;
+    uint64_t m_InputAuditFeedbackFrame = 0, m_InputAuditEligibilityReasons = 0;
     uint64_t m_InputLayerEligibleAtStart = 0;
     Vrr13::InputLayerCadence m_InputLayerCadence;
     Vrr13::InputCoverageHistory m_InputCoverageHistory;
