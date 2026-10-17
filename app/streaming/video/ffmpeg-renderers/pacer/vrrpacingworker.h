@@ -46,6 +46,8 @@ public:
     void* replayContext = nullptr;
     std::atomic_uint64_t replayTraceConsumed { 0 };
     std::atomic_bool replayStartReady { false };
+    // Written during closeTrace(), after flushing/closing the required artifact.
+    bool* replayTraceResult = nullptr;
 #endif
 
     void submit(PacedFrame&& frame);

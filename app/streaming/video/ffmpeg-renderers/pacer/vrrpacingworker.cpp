@@ -2507,6 +2507,11 @@ void VrrPacingWorker::closeTrace()
         m_TraceRowsEnqueued.exchange(0, std::memory_order_relaxed);
     const uint64_t arrivalsAllocated =
         m_TraceArrivalSequence.load(std::memory_order_relaxed);
+#ifdef VRR_WORKER_REPLAY
+    const bool replayHadTrace = m_TraceFile != nullptr;
+    const bool replayWasCapped = m_TraceSizeCapped;
+    bool replayCloseFailed = false;
+#endif
     if (m_TraceFile != nullptr) {
         if (m_TraceFormat == TraceFormat::Csv &&
                 std::fflush(m_TraceFile) != 0) {
@@ -2562,11 +2567,21 @@ void VrrPacingWorker::closeTrace()
 
     if (m_TraceFile != nullptr) {
         if (std::fclose(m_TraceFile) != 0) {
+#ifdef VRR_WORKER_REPLAY
+            replayCloseFailed = true;
+#endif
             SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
                         "VRR trace close reported a write failure");
         }
         m_TraceFile = nullptr;
     }
+#ifdef VRR_WORKER_REPLAY
+    if (replayTraceResult) {
+        *replayTraceResult = replayHadTrace && !replayWasCapped &&
+            !m_TraceWriteFailed && !replayCloseFailed && droppedRows == 0 &&
+            arrivalsAllocated > 0 && rowsEnqueued == arrivalsAllocated;
+    }
+#endif
     m_TraceChunk.clear();
     m_TraceWriteFailed = false;
 }

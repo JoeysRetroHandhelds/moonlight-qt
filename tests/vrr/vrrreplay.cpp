@@ -1280,19 +1280,6 @@ private:
     int m_Maximum = -1;
 };
 
-// Schema default for a controller parameter path, as text, or empty when the
-// path is not a controller parameter.
-QString vrrControllerParameterDefaultText(const QString& path)
-{
-#define VRR_REPLAY_PARAMETER_DEFAULT(type, jsonName, memberName, defaultValue) \
-    if (path == QStringLiteral("controller." #jsonName)) { \
-        return QString::number(static_cast<qulonglong>(defaultValue)); \
-    }
-    VRR_TIMING_PARAMETER_FIELDS(VRR_REPLAY_PARAMETER_DEFAULT)
-#undef VRR_REPLAY_PARAMETER_DEFAULT
-    return QString();
-}
-
 struct Distribution {
     static constexpr uint64_t kExactLimitUs = 100000;
     static constexpr uint64_t kMediumLimitUs = 1000000;
@@ -12030,74 +12017,8 @@ int main(int argc, char* argv[])
                         // absolute latch thresholds, allow base-guard latch
                         // exit, and predate render-tail pacing budgets; new
                         // traces record all of these explicitly.
-                        QString legacyValue;
-                        if (path ==
-                                "controller.render_baseline_percentile") {
-                            legacyValue = "50";
-                        }
-                        else if (path ==
-                                 "controller.pacing_latency_budget_divisor") {
-                            legacyValue = "0";
-                        }
-                        else if (path.endsWith("_period_numerator")) {
-                            legacyValue = "0";
-                        }
-                        else if (path.endsWith("_period_denominator")) {
-                            legacyValue = "1";
-                        }
-                        else if (path ==
-                                 "controller.latch_base_guard_exit") {
-                            legacyValue = "1";
-                        }
-                        else if (path ==
-                                 "controller.cadence_stability_latch_frames") {
-                            // Captures made before cadence-instability
-                            // protection must retain their recorded adaptive
-                            // presentation decisions for exact replay.
-                            legacyValue = "0";
-                        }
-                        else if (path ==
-                                 "controller.source_playout_delay_us") {
-                            // Older schema-5 captures predate the explicit
-                            // source-clock playout reserve.
-                            legacyValue = "0";
-                        }
-                        else if (path ==
-                                 "controller.readiness_learning_window_us" ||
-                                 path ==
-                                 "controller.retain_readiness_on_phase_reset") {
-                            // Older schema-5 captures used a fixed sample
-                            // count and reacquired readiness after each phase
-                            // reset.
-                            legacyValue = "0";
-                        }
-                        else if (path ==
-                                 "controller.timestamp_playout_enabled") {
-                            // Older schema-5 captures predate timestamp
-                            // playout and always projected a source clock.
-                            legacyValue = "0";
-                        }
-                        else if (path ==
-                                 "controller.playout_offset_window_us") {
-                            legacyValue = "3000000";
-                        }
-                        else if (path ==
-                                 "controller.playout_offset_slew_us") {
-                            legacyValue = "20";
-                        }
-                        else if (path ==
-                                 "controller.playout_offset_warmup_samples") {
-                            legacyValue = "64";
-                        }
-                        else {
-                            // Any parameter added after a capture was made
-                            // takes its schema default: older captures ran
-                            // the controller exactly as if the parameter
-                            // did not exist, which is what the default
-                            // expresses.
-                            legacyValue =
-                                vrrControllerParameterDefaultText(path);
-                        }
+                        const QString legacyValue =
+                            vrrLegacyControllerParameterDefaultText(path);
                         bool validLegacyValue = false;
                         capturedValue = legacyValue.toULongLong(
                             &validLegacyValue);
