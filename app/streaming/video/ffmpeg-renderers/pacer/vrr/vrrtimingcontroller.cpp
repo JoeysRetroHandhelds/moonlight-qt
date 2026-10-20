@@ -232,6 +232,10 @@ VrrTimingParameters vrrTimingParametersForSession(
     parameters.playoutInputLayerLifecycle = parameters.playoutInputPercentileEnabled ? 2 : 0;
     parameters.boundedCatchupEnabled = config.experimentalBoundedCatchup;
     parameters.normalizedSourceMapping = config.experimentalBoundedCatchup;
+    // At the display ceiling no presenter can repay inherited phase by showing
+    // frames faster. Released input buffer otherwise became standing ownership
+    // phase on DXGI (5 ms for minutes in the 2026-10-20 capture at 120/120).
+    parameters.playoutCeilingPhaseReplacement = 1;
     if (parameters.boundedCatchupEnabled) {
         parameters.playoutCatchupCarryLimitUs = kCatchupCarryLimitUs;
         parameters.playoutCatchupCarryLimitPeriodPerMille = kCatchupCarryLimitPeriodPerMille;
@@ -1464,20 +1468,42 @@ VrrTimingDecision VrrTimingController::schedule(const PacedFrame& frame,
     // old slot would turn that protection into permanent retiming instead.
     // Request replacement, never a deadline before physical ownership. The
     // worker must reserve a proven-ready successor before discarding anything.
-    if (m_Parameters.playoutSmoothingWindowedCadence >= 8 &&
-            m_Parameters.nativeScheduledPresentation && decision.cadenceEligible &&
+    // DXGI's latched flip anchor and an unlatched floor hold the same phase as
+    // a native schedule; recorded sessions limited this to the latter.
+    const bool ceilingReplacement = m_Parameters.playoutCeilingPhaseReplacement != 0 ||
+        (m_Parameters.playoutSmoothingWindowedCadence >= 8 && m_Parameters.nativeScheduledPresentation);
+    if (ceilingReplacement && decision.cadenceEligible &&
             !decision.phaseDiscontinuity && !decision.sourceRateChanged &&
             m_CadenceSamples.size() >= m_Parameters.minimumCadenceSamples &&
             m_SourcePeriodUs <= saturatingAdd(m_DisplayPeriodUs, m_DisplayPeriodUs / 1000)) {
-        m_FullRatePhase[m_FullRatePhaseNext] = decision.plannedExtraDelayUs();
+        uint64_t standingUs = decision.plannedExtraDelayUs();
+        if (m_Parameters.playoutCeilingPhaseReplacement != 0) {
+            // Smoothing revisions cap the planned recovery to their budget, but
+            // a synchronized flip still waits a refresh after the previous one:
+            // the capped plan hid 4-6 ms of on-screen phase. Measure the frame
+            // where it can actually appear, relative to its own smoothed slot.
+            // Ongoing source displacement at the ceiling also leaves on-screen
+            // phase that no replacement can cure; allow 1 ms of it, as the
+            // disturbance contracts do, so jitter never sheds frames steadily.
+            constexpr uint64_t kSourceDisplacementUs = 1000;
+            uint64_t shownUs = decision.targetUs;
+            if (decision.latchedPresentation && m_HaveLastSubmission)
+                shownUs = std::max(shownUs, saturatingAdd(spacingAnchorUs(), m_DisplayPeriodUs));
+            const uint64_t physicalUs = (shownUs - std::min(shownUs, decision.originalTargetUs)) +
+                uint64_t(std::max<int64_t>(0, decision.cadenceSmoothingUs));
+            standingUs = std::max(standingUs, physicalUs - std::min(physicalUs, kSourceDisplacementUs));
+        }
+        m_FullRatePhase[m_FullRatePhaseNext] = standingUs;
         m_FullRatePhaseNext = (m_FullRatePhaseNext + 1) % m_FullRatePhase.size();
         m_FullRatePhaseCount = std::min(m_FullRatePhaseCount + 1, m_FullRatePhase.size());
+        // Smoothing off has no retiming budget; its max-lag constant is not one.
+        const uint64_t budgetUs = m_Parameters.playoutSmoothingGainPerMille == 0 ? 0 :
+            fixedAbsorbPolicy() ? absorbReserveUs() : smoothingPhaseLimitUs();
         // Recover a standing offset, not a high point in the game's ordinary
         // short/long intervals. Dropping on each high point destroys cadence.
         if (m_FullRatePhaseCount == m_FullRatePhase.size() &&
                 *std::min_element(m_FullRatePhase.begin(), m_FullRatePhase.end()) >
-                    saturatingAdd(fixedAbsorbPolicy() ? absorbReserveUs() : smoothingPhaseLimitUs(),
-                        intervalQualityToleranceUs(m_Parameters)))
+                    saturatingAdd(budgetUs, intervalQualityToleranceUs(m_Parameters)))
             decision.trajectory.resyncRecommended = true;
     }
     else m_FullRatePhaseCount = 0;

@@ -43,7 +43,7 @@ VrrSessionConfig experimentalInputConfig(VrrSessionConfig config, bool logConfig
     config.experimentalInputPercentileWindowUs =
         uint64_t(config.timingOptions.resolved(config.latencyMode).historySeconds) * 1000000;
     if (logConfiguration) SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-        "Adaptive buffer: profile smoothness %.2f%% selects input readiness percentile; history %llu s, rise %llu us/s, rolling cadence-aware required-buffer percentile over the selected history with gradual convergence, without a hard score hold or per-trial waits (stable revision 5); layers at least 30 FPS apart, upward restore or downward drain of at most T per fresh frame; fixed 2T Absorb pad (input policy 11); interval severity score remains distinct",
+        "Adaptive buffer: profile smoothness %.2f%% selects input readiness percentile; history %llu s, rise %llu us/s, rolling cadence-aware required-buffer percentile over the selected history with gradual convergence, without a hard score hold or per-trial waits (stable revision 5); layers at least 30 FPS apart, upward restore or downward drain of at most T per fresh frame; fixed 2T Absorb pad (input policy 11); display-ceiling phase replacement on every presentation path; interval severity score remains distinct",
         config.experimentalInputPercentilePpm / 10000.0,
         static_cast<unsigned long long>(config.experimentalInputPercentileWindowUs / 1000000),
         static_cast<unsigned long long>(std::clamp<uint64_t>(config.experimentalInputPercentileRiseUsPerSecond, 250, 1000)));
@@ -592,7 +592,9 @@ int VrrPacingWorker::run()
         }
 
         if (decision.trajectory.resyncRecommended) {
-            const unsigned replacementWaitMs = m_TimingController->parameters().playoutSmoothingWindowedCadence >= 8 ?
+            const auto& policy = m_TimingController->parameters();
+            const unsigned replacementWaitMs = policy.playoutSmoothingWindowedCadence >= 8 ||
+                    policy.playoutCeilingPhaseReplacement != 0 ?
                 unsigned(std::min<uint64_t>(20, (decision.sourcePeriodUs * 2 + 999) / 1000)) : 0;
             if (reserveReadySuccessor(preparedAhead, reservedFrame, reservedDiscontinuity, replacementWaitMs)) {
                 telemetry.trajectorySuccessorFrame = reservedFrame.frame.frameNumber();

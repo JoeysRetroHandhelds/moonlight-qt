@@ -290,7 +290,11 @@
     X(uint64_t, playout_epoch_confirm_us, playoutEpochConfirmUs, 0) \
     X(uint64_t, playout_smoothing_readiness_bound, playoutSmoothingReadinessBound, 0) \
     /* Native future deadlines use the logical display clock, not CPU enqueue. */ \
-    X(uint64_t, native_scheduled_presentation, nativeScheduledPresentation, 0)
+    X(uint64_t, native_scheduled_presentation, nativeScheduledPresentation, 0) \
+    /* At the display ceiling, standing retiming beyond its budget plus T */ \
+    /* requests a ready-successor replacement. 0: native scheduled smoothing */ \
+    /* revisions 8/9 only (recorded); 1: every presentation path and mode. */ \
+    X(uint64_t, playout_ceiling_phase_replacement, playoutCeilingPhaseReplacement, 0)
 
 // Every value that changes VRR policy remains replaceable by replay without
 // rebuilding the controller. Production callers use these defaults.
@@ -485,7 +489,18 @@ public:
         if (m_Parameters.playoutInputPercentileEnabled)
             m_InputPercentileBuffer.noteBufferMiss(atUs, networkMiss, decoderMiss);
     }
-    void noteTrajectoryResyncDrop() { m_PhaseTrajectory.noteResyncDrop(); m_FullRatePhaseCount = 0; }
+    void noteTrajectoryResyncDrop() {
+        m_PhaseTrajectory.noteResyncDrop();
+        m_FullRatePhaseCount = 0;
+        // The replacement is the step that sheds held phase; slewing recovery
+        // back down at T/s would re-impose the delay it just removed, and a
+        // pending input release would otherwise need a replacement of its own
+        // every half millisecond instead of riding on this one.
+        if (m_Parameters.playoutCeilingPhaseReplacement != 0) {
+            m_ExtraBufferSlew.shedRecovery();
+            if (m_Parameters.playoutInputPercentileEnabled) m_InputPercentileBuffer.takePendingRelease();
+        }
+    }
     void noteTrajectoryDeferred() { m_PhaseTrajectory.noteDeferred(); m_FullRatePhaseCount = 0; }
     Vrr13::PhaseTrajectory::Stats trajectoryStats() const { return m_PhaseTrajectory.stats(); }
     void notePresentation(const Vrr13::PresentationObservation& observation);

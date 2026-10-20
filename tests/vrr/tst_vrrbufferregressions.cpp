@@ -29,6 +29,7 @@
 #include <cstdio>
 #include <cstring>
 #include <future>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <utility>
@@ -87,20 +88,31 @@ void reportLine(bool failure, const char* format, ...)
 //    "what fails, since which commit, and the evidence", 0, 0},
 struct KnownRegression {
     const char* scenarioPrefix;
-    const char* contracts[2];
+    const char* contracts[4];
     const char* evidence;
     size_t failed, passed;
 };
 std::vector<KnownRegression> g_Known = {
+    {"display-ceiling@no-latch/",
+     {"a released starting delay actually lowers latency at the ceiling", "late frames leave no standing phase at the ceiling",
+      "planned retiming at the display ceiling stays inside its budget",
+      "on-screen retiming at the display ceiling stays inside its budget"},
+     "A presenter that cannot latch must stay a guard above its previous present, so at exactly its maximum refresh "
+     "every frame is pushed later and the interval buffer reports service overload. That blocks all input evidence "
+     "(0 eligible observations), so the starting delay never releases (+6.9 ms Balanced), and phase sawtooths between "
+     "replacements (retiming p50 1.8-2.8 ms). Latching presenters (Windows D3D11) are unaffected.", 0, 0},
 };
 
-KnownRegression* knownRegression(std::string scenario, const char* contract)
+KnownRegression* knownRegression(const std::string& scenario, const char* contract)
 {
-    // Entries name the scenario once; they cover both presenter variants.
-    const auto variant = scenario.find("@no-latch");
-    if (variant != std::string::npos) scenario.erase(variant, std::strlen("@no-latch"));
+    // An entry without a variant covers both presenter variants; one naming
+    // "@no-latch" covers only that variant.
+    std::string base = scenario;
+    const auto variant = base.find("@no-latch");
+    if (variant != std::string::npos) base.erase(variant, std::strlen("@no-latch"));
     for (auto& known : g_Known) {
-        if (scenario.compare(0, std::strlen(known.scenarioPrefix), known.scenarioPrefix) != 0) continue;
+        const std::string& subject = std::strstr(known.scenarioPrefix, "@") ? scenario : base;
+        if (subject.compare(0, std::strlen(known.scenarioPrefix), known.scenarioPrefix) != 0) continue;
         for (const char* listed : known.contracts)
             if (listed && std::strcmp(listed, contract) == 0) return &known;
     }
@@ -163,8 +175,20 @@ constexpr uint32_t k116Ticks = 776; // 90 kHz RTP ticks per frame
 constexpr uint32_t k30Ticks = 3000;
 
 struct Frame {
-    uint64_t sourceUs = 0, decodedUs = 0, targetUs = 0, submittedUs = 0;
+    // submittedUs is the present call; shownUs is when it reaches the screen.
+    // A latched (synchronized) present waits in the flip queue for one refresh
+    // after the previous flip, exactly as the controller's spacing anchor models.
+    uint64_t sourceUs = 0, decodedUs = 0, targetUs = 0, submittedUs = 0, shownUs = 0;
     uint64_t appliedUs = 0, recoveryUs = 0, carryUs = 0, extraUs = 0;
+    // The smoothed slot before floors, and the smoothing retiming inside it.
+    uint64_t originalUs = 0;
+    int64_t smoothingUs = 0;
+    // Retiming as it reaches the screen: a capped plan cannot hide flip-queue phase.
+    uint64_t shownExtraUs() const {
+        return (shownUs > originalUs ? shownUs - originalUs : 0) + uint64_t(std::max<int64_t>(0, smoothingUs));
+    }
+    // Replaced by a ready successor (worker trajectory resync); never shown.
+    bool dropped = false;
 };
 
 struct Input {
@@ -209,20 +233,45 @@ public:
         frame.setLostPackets(input.lostPackets);
         const uint64_t now = std::max(f.decodedUs, m_LastSubmittedUs);
         const auto d = m_Controller.schedule(frame, now);
-        const uint64_t ready = std::max(now, d.renderStartUs) + input.prepareUs;
         f.targetUs = d.targetUs;
-        f.submittedUs = std::max(ready, d.targetUs) + input.presentLatencyUs;
-        m_Controller.notePreparationDuration(input.prepareUs, 0, ready);
-        m_Controller.noteSchedulerDelays(0, 0, true);
-        m_Controller.noteSubmission(true, false, f.submittedUs, f.submittedUs);
-        m_LastSubmittedUs = f.submittedUs;
         f.appliedUs = d.playoutDelayUs;
         f.recoveryUs = d.recoveryAddedUs;
         f.carryUs = d.trajectory.carryUs;
         f.extraUs = d.plannedExtraDelayUs();
+        f.originalUs = d.originalTargetUs;
+        f.smoothingUs = d.cadenceSmoothingUs;
+        if (d.trajectory.resyncRecommended) {
+            // The worker waits at most two source periods (20 ms cap) for a
+            // proven-ready successor, then discards this frame for it. Steady
+            // input decodes the successor one period later.
+            const uint64_t waitUs = std::min<uint64_t>(20000, 2 * d.sourcePeriodUs);
+            const uint64_t successorUs = f.sourceUs + d.sourcePeriodUs + kBaseLatencyUs +
+                input.decoderQueueUs + 400;
+            if (successorUs <= now + waitUs) {
+                m_Controller.noteTrajectoryResyncDrop();
+                m_Controller.noteSubmission(false, false, 0);
+                f.dropped = true;
+                ++m_Replacements;
+                m_Frames.push_back(f);
+                return m_Frames.back();
+            }
+            m_Controller.noteTrajectoryDeferred();
+        }
+        const uint64_t ready = std::max(now, d.renderStartUs) + input.prepareUs;
+        f.submittedUs = std::max(ready, d.targetUs) + input.presentLatencyUs;
+        f.shownUs = d.latchedPresentation && m_LastShownUs ?
+            std::max(f.submittedUs, m_LastShownUs + m_Controller.displayPeriodUs()) : f.submittedUs;
+        m_Controller.notePreparationDuration(input.prepareUs, 0, ready);
+        m_Controller.noteSchedulerDelays(0, 0, true);
+        m_Controller.noteSubmission(true, false, f.submittedUs, f.submittedUs);
+        m_LastSubmittedUs = f.submittedUs;
+        m_LastShownUs = f.shownUs;
         m_Frames.push_back(f);
         return m_Frames.back();
     }
+
+    // Frames discarded for a ready successor at the display ceiling.
+    size_t replacements() const { return m_Replacements; }
 
     void rebase() { m_Controller.rebase(); }
     const std::vector<Frame>& frames() const { return m_Frames; }
@@ -245,29 +294,38 @@ private:
     VrrSessionConfig m_Session;
     VrrTimingController m_Controller;
     int64_t m_DriftPpm = 0;
-    uint64_t m_Ticks = 0, m_LastSubmittedUs = 0;
+    uint64_t m_Ticks = 0, m_LastSubmittedUs = 0, m_LastShownUs = 0;
     int m_FrameNumber = 0;
+    size_t m_Replacements = 0;
     std::vector<Frame> m_Frames;
 };
 
 // Presented interval stretched beyond the tolerance relative to the source
 // interval: what the viewer sees as a hitch. Catch-up compressions are not.
+// A replaced frame is never shown; the next shown frame spans both intervals.
 size_t hitches(const std::vector<Frame>& f, size_t begin, size_t end, uint64_t toleranceUs)
 {
     size_t count = 0;
-    for (size_t i = std::max<size_t>(begin, 1); i < std::min(end, f.size()); ++i) {
-        const int64_t source = int64_t(f[i].sourceUs) - int64_t(f[i - 1].sourceUs);
-        const int64_t presented = int64_t(f[i].submittedUs) - int64_t(f[i - 1].submittedUs);
-        count += presented - source > int64_t(toleranceUs);
+    size_t previous = SIZE_MAX;
+    for (size_t i = begin; i < std::min(end, f.size()); ++i) {
+        if (f[i].dropped) continue;
+        if (previous != SIZE_MAX) {
+            const int64_t source = int64_t(f[i].sourceUs) - int64_t(f[previous].sourceUs);
+            const int64_t presented = int64_t(f[i].shownUs) - int64_t(f[previous].shownUs);
+            count += presented - source > int64_t(toleranceUs);
+        }
+        previous = i;
     }
     return count;
 }
 
+// Aggregates over decisions that reached the screen.
 template<class Value>
 uint64_t maximum(const std::vector<Frame>& f, size_t begin, size_t end, Value value)
 {
     uint64_t result = 0;
-    for (size_t i = begin; i < std::min(end, f.size()); ++i) result = std::max(result, value(f[i]));
+    for (size_t i = begin; i < std::min(end, f.size()); ++i)
+        if (!f[i].dropped) result = std::max(result, value(f[i]));
     return result;
 }
 
@@ -275,7 +333,8 @@ template<class Value>
 uint64_t minimum(const std::vector<Frame>& f, size_t begin, size_t end, Value value)
 {
     uint64_t result = UINT64_MAX;
-    for (size_t i = begin; i < std::min(end, f.size()); ++i) result = std::min(result, value(f[i]));
+    for (size_t i = begin; i < std::min(end, f.size()); ++i)
+        if (!f[i].dropped) result = std::min(result, value(f[i]));
     return result;
 }
 
@@ -283,12 +342,13 @@ template<class Value>
 uint64_t mean(const std::vector<Frame>& f, size_t begin, size_t end, Value value)
 {
     uint64_t total = 0, count = 0;
-    for (size_t i = begin; i < std::min(end, f.size()); ++i, ++count) total += value(f[i]);
+    for (size_t i = begin; i < std::min(end, f.size()); ++i)
+        if (!f[i].dropped) { total += value(f[i]); ++count; }
     return count ? total / count : 0;
 }
 
 uint64_t applied(const Frame& f) { return f.appliedUs; }
-uint64_t latency(const Frame& f) { return f.submittedUs - f.sourceUs; }
+uint64_t latency(const Frame& f) { return f.shownUs - f.sourceUs; }
 
 // First index from which the applied buffer stays at or below the limit for
 // the rest of the run; f.size() when it never settles.
@@ -341,9 +401,12 @@ uint64_t percentile(std::vector<uint64_t> values, unsigned perMille)
 std::vector<uint64_t> presentedJerk(const std::vector<Frame>& f, size_t begin, size_t end)
 {
     std::vector<uint64_t> jerk;
-    for (size_t i = std::max<size_t>(begin, 2); i < std::min(end, f.size()); ++i) {
-        const int64_t a = int64_t(f[i - 1].submittedUs) - int64_t(f[i - 2].submittedUs);
-        const int64_t b = int64_t(f[i].submittedUs) - int64_t(f[i - 1].submittedUs);
+    std::vector<uint64_t> shown;
+    for (size_t i = begin; i < std::min(end, f.size()); ++i)
+        if (!f[i].dropped) shown.push_back(f[i].shownUs);
+    for (size_t i = 2; i < shown.size(); ++i) {
+        const int64_t a = int64_t(shown[i - 1]) - int64_t(shown[i - 2]);
+        const int64_t b = int64_t(shown[i]) - int64_t(shown[i - 1]);
         jerk.push_back(uint64_t(a > b ? a - b : b - a));
     }
     return jerk;
@@ -386,6 +449,8 @@ void testStartingDelayReleasesOnCleanInput()
             "dropped %" PRIu64 " us within one second; fall rate %" PRIu64 " us/s", perSecond, s.fallUsPerSecond());
         check(visible == 0 && in.missed == 0, name, "clean input causes no presented hitch and no scored miss",
             "%zu presented hitches, %" PRIu64 " scored misses", visible, in.missed);
+        check(s.replacements() == 0, name, "no frame is replaced away from the display ceiling",
+            "%zu frames replaced at 116 FPS on a 120 Hz display", s.replacements());
     }
 }
 
@@ -676,6 +741,70 @@ void testOrdinaryVariationKeepsOneLayer()
     }
 }
 
+// 5c. At the display ceiling no presenter can repay phase by showing frames
+// faster: released input buffer and late-frame carry become standing ownership
+// phase, reported as Retiming budget, unless one frame is replaced by a ready
+// successor. Regression: the 2026-10-20 03:58 capture (120 FPS on 120 Hz, DXGI,
+// Absorb) held about 5 ms of retiming for minutes after its buffer released;
+// the replacement existed only for native scheduled presentation.
+void testDisplayCeilingShedsStandingPhase()
+{
+    for (const auto& preset : kPresets) for (const auto& smoothing : kSmoothing) {
+        const std::string name = label("display-ceiling", preset, smoothing);
+        const auto session = vrrProductionSession(preset.mode, 120, 120, smoothing.smooth, smoothing.absorb);
+        const uint64_t tolerance = uint64_t(session.timingOptions.toleranceUs);
+        const uint64_t budget = !smoothing.smooth ? 0 : smoothing.absorb ? 2 * tolerance : tolerance;
+        const size_t total = 60 * 120, settledFrom = 40 * 120;
+        // One late frame every 5 s adds carry that running faster cannot repay.
+        const auto run = [&](uint64_t seedUs) {
+            auto stream = std::make_unique<Stream>(session, seedUs);
+            Rng rng(137 + uint64_t(preset.mode));
+            for (size_t i = 0; i < total; ++i)
+                stream->step(750, {rng.below(400) + (i % 600 == 300 ? 4000 : 0)});
+            return stream;
+        };
+        // Cold start releases the starting delay at the ceiling; the reference
+        // starts at the floor with the same input.
+        const auto cold = run(0), floor = run(1000);
+        const auto& f = cold->frames();
+        std::vector<uint64_t> planned, shown;
+        for (size_t i = settledFrom; i < total; ++i) {
+            if (f[i].dropped) continue;
+            planned.push_back(f[i].extraUs);
+            shown.push_back(f[i].shownExtraUs());
+        }
+        const uint64_t plannedP50 = percentile(planned, 500), shownP50 = percentile(shown, 500);
+        const uint64_t coldLatency = mean(f, settledFrom, total, latency);
+        const uint64_t floorLatency = mean(floor->frames(), settledFrom, total, latency);
+        // The input buffer settles at its floor in both runs, so on-screen
+        // latency differs from it only by retiming and readiness.
+        const uint64_t floorBuffer = floor->frames().back().appliedUs;
+        const uint64_t start = f[0].appliedUs;
+        // Each replacement sheds up to one period: the starting delay, plus at
+        // most one per late frame, plus slack. A presenter that cannot latch
+        // must stay a guard above the previous present, so at exactly its
+        // maximum refresh it cannot show every frame; bound it to 4 per second.
+        const size_t allowed = t_CanLatch ? size_t((start + 8332) / 8333) + total / 600 + 3 : total / 30;
+        report("%-52s start %5" PRIu64 " retiming p50 planned %4" PRIu64 " shown %4" PRIu64 " (budget %4" PRIu64 ") latency %5" PRIu64 " (floor start %5" PRIu64 ") replacements %zu (allowed %zu)\n",
+            name.c_str(), start, plannedP50, shownP50, budget, coldLatency, floorLatency, cold->replacements(), allowed);
+        check(plannedP50 <= budget + tolerance + 50, name, "planned retiming at the display ceiling stays inside its budget",
+            "planned retiming p50 %" PRIu64 " us over the last 20 s; budget %" PRIu64 " us plus T %" PRIu64 " us",
+            plannedP50, budget, tolerance);
+        check(shownP50 <= budget + tolerance + 50, name, "on-screen retiming at the display ceiling stays inside its budget",
+            "frames reached the screen %" PRIu64 " us (p50) after their smoothed slot; budget %" PRIu64 " us plus T %" PRIu64 " us",
+            shownP50, budget, tolerance);
+        check(coldLatency <= floorLatency + tolerance, name, "a released starting delay actually lowers latency at the ceiling",
+            "latency %" PRIu64 " us after releasing the cold start, %" PRIu64 " us when started at the floor",
+            coldLatency, floorLatency);
+        check(floorLatency <= kBaseLatencyUs + 100 + floorBuffer + budget + tolerance + 1000, name,
+            "late frames leave no standing phase at the ceiling",
+            "latency %" PRIu64 " us from a floor start with a %" PRIu64 " us buffer and %" PRIu64 " us budget",
+            floorLatency, floorBuffer, budget);
+        check(cold->replacements() <= allowed, name, "replacement sheds standing phase without dropping steadily",
+            "%zu replacements in 60 s; allowed %zu", cold->replacements(), allowed);
+    }
+}
+
 // 6. An abrupt rate drop that moves the source mapping later must not leave
 // the old protection standing on top of it. 116 FPS with one frame in ten
 // arriving E early holds the mapping minimum on the early frames, so the
@@ -699,7 +828,7 @@ void testRateDropReleasesMappingExcess()
         Stream reference(session, 1000);
         Rng referenceRng(67 + uint64_t(preset.mode));
         for (size_t i = 0; i < 1050; ++i) reference.step(k30Ticks, {early + referenceRng.below(600)});
-        const auto age = [](const Frame& f) { return f.submittedUs - f.decodedUs; };
+        const auto age = [](const Frame& f) { return f.shownUs - f.decodedUs; };
         const auto& f = s.frames();
         const uint64_t settledAge = mean(reference.frames(), 600, 1050, age);
         const uint64_t firstAge = mean(f, drop, drop + 450, age);
@@ -978,6 +1107,7 @@ int main(int argc, char** argv)
         {"plateau-history", testPlateauFollowsSelectedHistory},
         {"rate-round-trip", testRateRoundTripRestoresProtection},
         {"ordinary-variation", testOrdinaryVariationKeepsOneLayer},
+        {"display-ceiling", testDisplayCeilingShedsStandingPhase},
         {"rate-drop", testRateDropReleasesMappingExcess},
         {"clock-drift", testClockDriftNeitherRatchetsNorErodes},
         {"loss-and-downstream", testLossAndDownstreamWorkBuyNoInputDelay},

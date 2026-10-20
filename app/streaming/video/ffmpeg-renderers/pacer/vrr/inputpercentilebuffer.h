@@ -216,6 +216,15 @@ public:
         m_Stats.currentUs = m_Stats.targetUs;
         m_ReleaseFraction = 0;
     }
+    // A ready-successor replacement at the display ceiling is a visible step
+    // anyway. Take any pending release with it: released protection cannot
+    // reach the screen there except through a replaced frame.
+    void takePendingRelease() {
+        if (!m_Stats.initialized || m_Stats.targetUs >= m_Stats.currentUs) return;
+        m_Stats.currentUs = m_Stats.targetUs;
+        ++m_Stats.lowers;
+        m_ReleaseFraction = 0;
+    }
     // Applied protection is a local duration. Only movement of the actual
     // producer mapping changes that duration; drift normalization of retained
     // evidence is not another movement of the playback deadline.

@@ -668,6 +668,8 @@ ContinuousJitterResult continuousJitter(bool absorb, bool scheduled, int fps, ui
     session.displayRefreshHz = 120;
     auto policy = vrrTimingParametersForSession(session, scheduled, scheduled);
     policy.playoutSmoothingWindowedCadence = revision;
+    // Recorded revisions predate ceiling replacement on every path.
+    if (revision < 8) policy.playoutCeilingPhaseReplacement = 0;
     policy.playoutDelayStartSeedUs = 2000;
     VrrTimingController controller(session, true, policy);
     // Every gap differs by 0.5--1 ms from the source grid. The displacement

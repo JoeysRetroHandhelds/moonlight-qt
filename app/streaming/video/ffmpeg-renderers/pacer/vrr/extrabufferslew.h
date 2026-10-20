@@ -47,6 +47,8 @@ public:
     uint64_t recovery(uint64_t desiredUs) {
         return uint64_t(move(m_RecoveryUs, int64_t(desiredUs), m_FastRecovery));
     }
+    // A ready-successor replacement removes held recovery phase at once.
+    void shedRecovery() { m_RecoveryUs = 0; m_FastRecovery = false; }
     bool draining(int64_t smoothingUs, uint64_t recoveryUs) const {
         return m_SmoothingUs > smoothingUs || m_RecoveryUs > int64_t(recoveryUs);
     }

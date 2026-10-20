@@ -24,7 +24,7 @@ Historical revision-2 finite-trial tests remain unchanged.
 ## Adaptive buffer regression gate
 
 `tst_vrrbufferregressions` is the fast check to run after any change to the
-input buffer, its rate layers, catch-up or smoothing. It takes about 7 s (its
+input buffer, its rate layers, catch-up or smoothing. It takes about 12 s (its
 scenarios run in parallel) and covers every preset (Low Latency, Balanced,
 Smooth) with smoothing off, Reduce judder (the default) and Absorb, each for a
 presenter that can latch (Windows D3D11) and one that cannot (Linux Vulkan
@@ -66,6 +66,7 @@ The gate avoids both problems:
 | `plateau-history` | protection holds while its evidence is inside the history, releases once it expires, does not oscillate | 2ccca878, 0d2f9adc, 7d1148f9 |
 | `rate-round-trip` | a slower rate adds no delay, layer steps stay within T, a returning rate restores protection at once and keeps its evidence for the rest of its history | 5b062c4b, 1a5bef09, 181415ec |
 | `ordinary-variation` | a 116 -> 90 -> 116 FPS ramp and random 90-116 FPS dwell (with the long tails that once switched a 91 FPS layer) never switch layers, keep protection, and scale with a larger need like a steady rate; three-frame stall excursions cost no protection | 1a5bef09 false mid-band switches holding the buffer flat |
+| `display-ceiling` | at exactly 120 FPS on 120 Hz, planned and on-screen retiming stay inside budget plus T, a released starting delay reaches the screen, late frames leave no standing phase, and replacements stay occasional | 2026-10-20 capture: 5 ms of retiming for minutes on DXGI |
 | `rate-drop` | a rate drop that moves the mapping gives the excess back promptly | f96b0524 |
 | `clock-drift` | +/-50 ppm drift neither ratchets nor erodes retained protection | 409a5661 |
 | `loss-and-downstream` | lost-packet frames, slow preparation and client decoder backlog above the typical handoff buy no input buffer | 39d10abf, post-input work, own backlog |
@@ -78,15 +79,22 @@ evidence. They print as `KNOWN` on every run without failing the gate, so CI
 and nightly releases keep running. `--strict` fails them. Once none of an
 entry's checks fail, the gate fails with `FIXED KNOWN REGRESSION` until the
 entry is deleted, so a fix hardens the contract instead of leaving it advisory.
-There are no open entries. The first, `rate-drop`, found that input policy 10
-drained layer decreases at the normal release law, bringing back f96b0524's
-excess latency after an abrupt rate drop; policy 11 fixed it and its entry was
-deleted (see architecture.md, "Rate-drop layer drain").
+The first entry, `rate-drop`, found that input policy 10 drained layer
+decreases at the normal release law, bringing back f96b0524's excess latency
+after an abrupt rate drop; policy 11 fixed it and the entry was deleted. The
+open entry is `display-ceiling@no-latch`: a presenter that cannot latch cannot
+show every frame at exactly its maximum refresh, and the resulting service
+overload blocks input evidence so the starting delay never releases (see
+architecture.md, "Display-ceiling phase replacement").
 
 The simulation follows the worker's call order with deterministic input. Every
 frame carries the 0.1 ms reassembly-to-decode handoff measured in real
-captures. It measures controller decisions, not driver scheduling or optical
-scanout.
+captures. A latched present reaches the screen no sooner than one refresh after
+the previous flip, as the controller's spacing anchor models, and latency and
+hitches are scored from that time: scoring present calls hid the 2026-10-20
+plateau because a budget-capped plan looked healthy. A recommended replacement
+discards the frame for its successor exactly as the worker does. It measures
+controller decisions, not driver scheduling or optical scanout.
 
 ## Trace questions and their regression contracts
 

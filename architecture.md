@@ -1,3 +1,34 @@
+Display-ceiling phase replacement (2026-10-20, `playout_ceiling_phase_replacement=1`):
+at exactly the display ceiling no presenter can repay inherited phase by
+showing frames faster. The 2026-10-20 03:58 capture (SHA-256 `B1A42391...132B`,
+120 FPS on 120 Hz, DXGI latched, Absorb revision 7, input policy 10) kept
+3-7 ms of catch-up carry for eight minutes, about 5 ms at a sustained 120 FPS:
+input-buffer release and late frames became flip-queue ownership phase. The
+ready-successor replacement existed only for native scheduled presentation,
+and its trigger read the planned retiming, which smoothing revisions 8/9 cap to
+their budget while a synchronized flip still waits a refresh after the last.
+In the controller model the published build therefore showed retiming at its
+budget yet 9.96-11.3 ms latency against 5.6 ms from a floor start.
+
+New sessions record parameter 1: the replacement applies to every presentation
+path and smoothing mode. Its trigger takes the larger of the planned retiming
+and the on-screen retiming (a latched frame's flip estimate relative to its
+smoothed slot, less 1 ms of unabsorbable source displacement), against the
+smoothing budget (0, T or 2T) plus T over 32 qualified frames. A replacement
+resets the T-per-second recovery slew and takes the pending input release with
+it, so one dropped frame sheds a starting delay instead of a dozen. Modeled
+Balanced latency after a cold start at 120/120 now equals a floor start
+(2.67 ms Reduce judder, 3.61 ms Absorb) with one replacement for the release
+and one per injected late frame. Away from the ceiling nothing is replaced.
+Recorded captures replay unchanged; replay cannot shed frames, so these are
+controller-model results from `tst_vrrbufferregressions` display-ceiling.
+
+Known discrepancy: a presenter that cannot latch must stay a guard above its
+previous present, so at exactly its maximum refresh it cannot show every frame.
+The interval buffer then reports service overload, which blocks all input
+evidence; the starting delay never releases (+6.9 ms Balanced) and phase
+sawtooths between replacements. The gate lists it as an open known regression.
+
 Rate-drop layer drain (2026-10-19, input policy 11): new adaptive sessions
 select input-hitch policy 11. It is policy 10 plus policy 9's drain of a
 smaller layer by at most T per fresh source frame, instead of the ordinary
@@ -6101,7 +6132,7 @@ Consult the test names and assertions for the specific behavior being changed;
 the existence of a broad suite is not proof that a native API argument is tested.
 
 [tst_vrrbufferregressions.cpp](tests/vrr/tst_vrrbufferregressions.cpp) is the
-fast (about 7 s) adaptive-buffer regression gate. It builds every controller
+fast (about 12 s) adaptive-buffer regression gate. It builds every controller
 through [vrrproductionsession.h](tests/vrr/vrrproductionsession.h), which
 mirrors the worker's session resolution; `tst_vrrpacingworker` compares every
 resolved timing parameter with the worker's own, so the two cannot drift. No
