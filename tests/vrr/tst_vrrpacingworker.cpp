@@ -3,6 +3,7 @@
 #include "../../app/streaming/video/ffmpeg-renderers/pacer/vrr/vrrframedroppolicy.h"
 #include "../../app/streaming/video/ffmpeg-renderers/pacer/vrrpacingworker.h"
 #include "../../app/streaming/video/ffmpeg-renderers/d3d11presentpolicy.h"
+#include "vrrproductionsession.h"
 #include "vrrtestfakes.h"
 
 #include <SDL.h>
@@ -4008,6 +4009,47 @@ void testExperimentalInputPercentileActivationTrace()
     restore("MOONLIGHT_VRR_DEEP_TRACE", priorDeep);
 }
 
+// Qt-free controller tests (tst_vrrbufferregressions) build live sessions
+// through vrrproductionsession.h because they cannot link the worker. If its
+// resolution drifts from the worker's, those tests silently exercise a policy
+// no user runs, so every resolved timing parameter must match.
+void testProductionSessionHelperMatchesWorker()
+{
+    const char* overrides[] = {"MOONLIGHT_VRR_EXPERIMENTAL_ADAPTIVE_BUFFER",
+                               "MOONLIGHT_VRR_INPUT_ACCOUNTING", "MOONLIGHT_VRR_BOUNDED_CATCHUP"};
+    QByteArray prior[3];
+    for (int i = 0; i < 3; ++i) {
+        prior[i] = qgetenv(overrides[i]);
+        qunsetenv(overrides[i]);
+    }
+    const VrrTimingOptions custom[] = {{}, {2000, 9980, 200, 750}, {250, 9000, 10, 2000}};
+    for (int mode : {0, 1, 2}) for (const auto& options : custom) for (int rate : {30, 116, 240})
+    for (bool smooth : {false, true}) for (bool absorb : {false, true}) for (bool native : {false, true}) {
+        VrrSessionConfig base;
+        base.latencyMode = mode;
+        base.timingOptions = options.resolved(mode);
+        base.streamRateHz = rate;
+        base.displayRefreshHz = 120;
+        base.smoothFrameTiming = smooth;
+        base.absorbMicrostutter = smooth && absorb;
+        const auto expected = vrrTimingParametersForSession(VrrPacingWorker::resolvedInputConfig(base), native, native);
+        const auto actual = vrrTimingParametersForSession(vrrProductionInputConfig(base), native, native);
+#define VRR_EXPECT_PRODUCTION_PARAMETER(type, jsonName, memberName, defaultValue) \
+        expect(actual.memberName == expected.memberName, \
+               "vrrproductionsession.h must resolve worker parameter " #jsonName);
+        VRR_TIMING_PARAMETER_FIELDS(VRR_EXPECT_PRODUCTION_PARAMETER)
+#undef VRR_EXPECT_PRODUCTION_PARAMETER
+    }
+    const auto preset = vrrProductionSession(1, 116, 120);
+    expect(preset.smoothFrameTiming && !preset.absorbMicrostutter &&
+               preset.timingOptions.targetHundredths == 9950 && preset.experimentalBoundedCatchup,
+           "the production session helper defaults to the shipped Balanced/Reduce judder preference");
+    for (int i = 0; i < 3; ++i) {
+        if (prior[i].isNull()) qunsetenv(overrides[i]);
+        else qputenv(overrides[i], prior[i]);
+    }
+}
+
 void testTraceCapturesAllowTearingWithoutChangingController()
 {
     for (bool allowTearing : {true, false}) {
@@ -4304,6 +4346,7 @@ void runNamed(const char* name, Test test)
 
 int main()
 {
+    runNamed("testProductionSessionHelperMatchesWorker()", [&] { testProductionSessionHelperMatchesWorker(); });
     runNamed("testReceiveDeadlineMath()", [&] { testReceiveDeadlineMath(); });
     Vrr13::ReadinessWindow averageWindow;
     averageWindow.record(1000000, 500, false);

@@ -353,6 +353,18 @@ recovery retain their movement budget, but input adaptation no longer spends
 that budget or accumulates debt that freezes extra-delay recovery. The fixed
 2T Absorb pad and physical readiness/ownership floors remain in force.
 
+Known discrepancy (2026-10-19, `tst_vrrbufferregressions` rate-drop): because
+a smaller layer drains at the normal release law, an abrupt rate drop that also
+moves the source mapping later keeps the old protection on top of the moved
+mapping. With 116 FPS where one frame in ten arrives early, then 30 FPS without
+early frames, decode-to-present in the controller model averages 4.2 ms
+(Balanced) and 5.8 ms (Smooth) over the 15 s after the drop. A session that was
+always at 30 FPS settles at 1.2 ms, and the excess takes about 25--30 s to
+clear. That is the f96b0524 symptom. On the same input, revisions 6/8 with the
+rate-drop snap and revision 9's T-per-frame drain clear it within about 3 s.
+The gate records it as an open known regression. This is a model result, not a
+live capture.
+
 The normal overlay and timing graph report recent eligible coverage over 10 s.
 The normal overlay also shows the full selected history (Balanced: 120 s),
 which remains the controller's learning history. Both reporting windows count
@@ -6059,6 +6071,21 @@ history behavior, queue/drop/cancellation/suspension, ownership, wait floors,
 trace integrity, native diagnostic modeling, and replay configuration/contracts.
 Consult the test names and assertions for the specific behavior being changed;
 the existence of a broad suite is not proof that a native API argument is tested.
+
+[tst_vrrbufferregressions.cpp](tests/vrr/tst_vrrbufferregressions.cpp) is the
+fast (about 4 s) adaptive-buffer regression gate. It builds every controller
+through [vrrproductionsession.h](tests/vrr/vrrproductionsession.h), which
+mirrors the worker's session resolution; `tst_vrrpacingworker` compares every
+resolved timing parameter with the worker's own, so the two cannot drift. No
+contract pins a policy revision, so a newly selected default inherits all of
+them. Each contract names the commit whose regression it guards and is measured
+from simulated presentation, not the controller's own counters. Contracts the
+shipped policy currently violates are listed as known regressions: they print
+on every run, `--strict` fails them, and a fix fails the gate until the entry is
+deleted. Most older buffer regression tests pin the historical revision they
+were written against or leave bounded catch-up off. They protect exact replay
+of those revisions, not the live policy.
+
 `tst_vrrdiagnostics` additionally exercises capture scope, environment restoration,
 export locking, file preservation and ZIP bounds; the independent Python ZIP
 check verifies contents and CRCs. Windows CI includes that test and exact replay

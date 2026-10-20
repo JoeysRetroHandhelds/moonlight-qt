@@ -104,6 +104,9 @@ inputpercentileintegration.file = $$PWD/inputpercentileintegration.pro
 SUBDIRS += inputpercentileintegration
 inputcontracts.file = $$PWD/inputcontracts.pro
 SUBDIRS += inputcontracts
+# Production-policy buffer regression gate; fast enough to run on every build.
+bufferregressions.file = $$PWD/bufferregressions.pro
+SUBDIRS += bufferregressions
 rollingquantile.file = $$PWD/rollingquantile.pro
 SUBDIRS += rollingquantile
 

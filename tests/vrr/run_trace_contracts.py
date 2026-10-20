@@ -15,6 +15,7 @@ import time
 # Required names make a missing target fail before any reassuring pass count.
 # Additional built VRR suites are run too, preserving the broader CI sweep.
 REQUIRED_TESTS = {
+    "tst_vrrbufferregressions",
     "tst_vrrtracemetrics", "tst_sourcegapsmoothing", "tst_vrrtimingcontroller",
     "tst_vrrpacingworker", "tst_vrrreplayconfig", "tst_vrrratepolicy",
     "tst_inputpercentileintegration", "tst_vrrinputcontracts", "tst_inputaccounting", "tst_inputtracechunks",

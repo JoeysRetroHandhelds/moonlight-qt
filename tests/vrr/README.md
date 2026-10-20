@@ -21,6 +21,67 @@ Historical revision-2 finite-trial tests remain unchanged.
 
 # VRR deterministic tests
 
+## Adaptive buffer regression gate
+
+`tst_vrrbufferregressions` is the fast check to run after any change to the
+input buffer, its rate layers, catch-up or smoothing. It takes about 4 s (its
+scenarios run in parallel) and covers every preset (Low Latency, Balanced,
+Smooth) with smoothing off, Reduce judder (the default) and Absorb.
+
+```text
+build\tests-vrr\vrr\release\tst_vrrbufferregressions.exe              # everything
+build\tests-vrr\vrr\release\tst_vrrbufferregressions.exe rate-drop    # one scenario
+build\tests-vrr\vrr\release\tst_vrrbufferregressions.exe --strict     # known regressions fail too
+```
+
+It exists because earlier buffer regression tests kept passing while the
+same bugs returned. Each was written against the policy revision current at
+the time (`playoutInputHitchMissesOnly` 0-9, stable adaptation 1/2), and most
+whole-controller tests built a default `VrrSessionConfig`. Those defaults
+leave bounded catch-up, the receive clock, profile-scaled recovery credit,
+layer seeding and learning trim switched off. The live worker switches them
+all on, so a new default revision began with no coverage for old bugs.
+
+The gate avoids both problems:
+
+- Every controller is built through `vrrproductionsession.h`, which mirrors
+  `VrrPacingWorker::resolvedInputConfig()`.
+  `tst_vrrpacingworker::testProductionSessionHelperMatchesWorker` compares
+  every resolved timing parameter with the worker's, so they cannot drift.
+  Use this header in any new controller-level test of live behavior.
+- No contract pins a revision. A newly selected default inherits them all.
+- Visible hitches are measured from the simulated presentation (stretched
+  intervals beyond T), not from the controller's own miss counters.
+- Bounds come from the documented policy (250 us/s release law with its
+  window/30 time constant, rise rate, profile allowance, T and 2T budgets)
+  plus stated slack, not from whatever the implementation produced.
+
+| Scenario | Contract | Regression it guards |
+| --- | --- | --- |
+| `start-release` | cold-start and cached starting delay drain to the floor at the release law; never faster than the fall rate | Codex paced-attack revision 2 floating at its start; stale plateaus (2ccca878, 0d2f9adc) |
+| `within-allowance` | misses inside the profile allowance buy no latency | buffers that looked too high |
+| `earn-protection` | late input beyond the allowance earns protection at the rise rate, keeps hitches inside the allowance, never exceeds lateness beyond T | 5b062c4b slow relearning, blocked growth, over-buffering |
+| `plateau-history` | protection holds while its evidence is inside the history, releases once it expires, does not oscillate | 2ccca878, 0d2f9adc, 7d1148f9 |
+| `rate-round-trip` | a slower rate adds no delay, layer steps stay within T, a returning rate restores protection at once | 5b062c4b, 1a5bef09, 181415ec |
+| `rate-drop` | a rate drop that moves the mapping gives the excess back promptly | f96b0524 |
+| `clock-drift` | +/-50 ppm drift neither ratchets nor erodes retained protection | 409a5661 |
+| `loss-and-downstream` | lost-packet frames, slow preparation and client decoder backlog buy no input buffer | 39d10abf, post-input work, own backlog |
+| `catch-up-carry` | carry drains between late frames despite wake-up overshoot | 3c32553e |
+| `invalid-expiry` | protection expires through ineligible frames and repeated epochs | 75e97d26 |
+| `smoothing-budget` | Reduce judder (T) and Absorb (2T) stay inside their budgets, buy no input buffer, and actually even out short/long pairs | smoothing revisions 8/9 and the T-per-second actuator they replaced |
+
+Contracts the shipped policy violates today are listed in `g_Known` with their
+evidence. They print as `KNOWN` on every run without failing the gate, so CI
+and nightly releases keep running. `--strict` fails them. Once none of an
+entry's checks fail, the gate fails with `FIXED KNOWN REGRESSION` until the
+entry is deleted, so a fix hardens the contract instead of leaving it advisory.
+The open entry is `rate-drop`: input policy 10 drains layer decreases at the
+normal release law, which brings back f96b0524's excess latency after an
+abrupt rate drop (see architecture.md, "Known discrepancy").
+
+The simulation follows the worker's call order with deterministic input. It
+measures controller decisions, not driver scheduling or optical scanout.
+
 ## Trace questions and their regression contracts
 
 The trace checklist is an outcome checklist, not just a list of internal caps.
@@ -52,8 +113,8 @@ and retiming checks.
 | Does OS feedback belong to this image and display epoch? | `tst_overlay::testConfirmedDisplayRefresh`, worker delayed-display/epoch fixtures, native scheduling/clock audits in `tst_vrrreplayconfig` |
 | Are red input markers using the matching frame's actual allowance? | `tst_vrrtracemetrics::testRedMarkersCannotBeHiddenByExtraBudgetOrLateTargets`, overlay producer/raw-stage coverage tests |
 | Are smoothing and recovery active without a permanent latency penalty? | `tst_sourcegapsmoothing::testContinuousGameJitterAndLatency`, `testLiveAdaptiveRetimingBudget`, `testBufferDisturbanceContracts` |
-| Can adaptation inflate from render work, packet loss or its own backlog? | Input eligibility/service tests in `tst_inputpercentileintegration` and `tst_inputaccounting`, recorded `tst_inputtracechunks` fixtures |
-| Do histories release, expire and restore rate-layer protection correctly? | Rolling required-buffer and layer tests in `tst_inputpercentileintegration`, receive-clock tests, `tst_vrrcacheidentity` |
+| Can adaptation inflate from render work, packet loss or its own backlog? | `tst_vrrbufferregressions` loss-and-downstream on the live policy, input eligibility/service tests in `tst_inputpercentileintegration` and `tst_inputaccounting`, recorded `tst_inputtracechunks` fixtures |
+| Do histories release, expire and restore rate-layer protection correctly? | `tst_vrrbufferregressions` (live policy, every preset and smoothing mode), rolling required-buffer and layer tests in `tst_inputpercentileintegration`, receive-clock tests, `tst_vrrcacheidentity` |
 | Do actual measured waits reconcile with processing/queue/render stats? | `tst_performancestats`, worker decode-readiness and retried-wait fixtures |
 | Can recovery replace only a proven-ready image without losing ownership? | `tst_vrrpacingworker::testFixedReserveReplacementRequiresReadySuccessor`, prepared/suspend/shutdown tests, `tst_phasetrajectory` |
 | Are modeled spacing, raster bounds and native protection valid? | `tst_dxgipresent`, `tst_presentationclock`, raster/native/lifecycle audits in `tst_vrrreplayconfig` |
