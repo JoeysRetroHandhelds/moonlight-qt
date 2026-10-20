@@ -2933,10 +2933,10 @@ void testNativeScheduledRetimingBounds()
         const auto scheduled = vrrTimingParametersForSession(session, true, true);
         const auto paced = vrrTimingParametersForSession(session, true, false);
         const auto tolerance = uint64_t(session.timingOptions.resolved(mode).toleranceUs);
-        expect(scheduled.playoutSmoothingWindowedCadence == 4 &&
+        expect(scheduled.playoutSmoothingWindowedCadence == 9 &&
                    scheduled.playoutSmoothingMaxLagUs == tolerance &&
                    scheduled.playoutSmoothingReserveMaxUs == 0 &&
-                   paced.playoutSmoothingWindowedCadence == 4 &&
+                   paced.playoutSmoothingWindowedCadence == 9 &&
                    paced.playoutSmoothingMaxLagUs == tolerance && paced.playoutSmoothingReserveMaxUs == 0,
                "native and worker-paced Reduce judder must share one tolerance with no standing reserve");
         VrrTimingController controller(session, true, scheduled);
@@ -4862,7 +4862,7 @@ void testProductionSmoothFrameTiming()
                        policy.playoutSmoothingPeriodAlphaPerMille == 25 &&
                        policy.playoutSmoothingRecoveryUs == 0 &&
                        policy.playoutSmoothingMaxLagUs == (enabled ? tolerance : 6000) &&
-                       policy.playoutSmoothingWindowedCadence == (enabled ? 4U : 2U) &&
+                       policy.playoutSmoothingWindowedCadence == (enabled ? 9U : 2U) &&
                        policy.playoutSmoothingRecenterPerMille == 0 &&
                        policy.playoutSmoothingAbsorbReserveUs == 0 &&
                        policy.playoutSmoothingPeriodFeedbackPerMillion == 0 &&

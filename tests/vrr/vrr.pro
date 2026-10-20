@@ -13,6 +13,8 @@ SUBDIRS += dxgipresent
 
 presentationclock.file = $$PWD/presentationclock.pro
 SUBDIRS += presentationclock
+tracemetrics.file = $$PWD/tracemetrics.pro
+SUBDIRS += tracemetrics
 compositionpresentpolicy.file = $$PWD/compositionpresentpolicy.pro
 SUBDIRS += compositionpresentpolicy
 
@@ -100,6 +102,8 @@ phasetrajectory.file = $$PWD/phasetrajectory.pro
 SUBDIRS += phasetrajectory
 inputpercentileintegration.file = $$PWD/inputpercentileintegration.pro
 SUBDIRS += inputpercentileintegration
+inputcontracts.file = $$PWD/inputcontracts.pro
+SUBDIRS += inputcontracts
 rollingquantile.file = $$PWD/rollingquantile.pro
 SUBDIRS += rollingquantile
 

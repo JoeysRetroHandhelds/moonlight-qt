@@ -485,8 +485,8 @@ public:
         if (m_Parameters.playoutInputPercentileEnabled)
             m_InputPercentileBuffer.noteBufferMiss(atUs, networkMiss, decoderMiss);
     }
-    void noteTrajectoryResyncDrop() { m_PhaseTrajectory.noteResyncDrop(); }
-    void noteTrajectoryDeferred() { m_PhaseTrajectory.noteDeferred(); }
+    void noteTrajectoryResyncDrop() { m_PhaseTrajectory.noteResyncDrop(); m_FullRatePhaseCount = 0; }
+    void noteTrajectoryDeferred() { m_PhaseTrajectory.noteDeferred(); m_FullRatePhaseCount = 0; }
     Vrr13::PhaseTrajectory::Stats trajectoryStats() const { return m_PhaseTrajectory.stats(); }
     void notePresentation(const Vrr13::PresentationObservation& observation);
     uint64_t nativeCadenceIntervals() const { return m_NativeCadenceIntervals; }
@@ -572,11 +572,15 @@ public:
     uint64_t playoutDelayUs() const;
     // Learned Reduce judder readiness reserve; already included in each
     // decision's cadenceSmoothingUs, never in playoutDelayUs.
-    uint64_t smoothingReserveUs() const { return m_Parameters.playoutSmoothingWindowedCadence == 7 ?
+    uint64_t smoothingReserveUs() const { return fixedAbsorbPolicy() ?
         absorbReserveUs() : m_SmoothingReserveUs; }
     // Absorb microstutter reserve at the current source period; included in
     // each revision-5 decision's cadenceSmoothingUs, never in playoutDelayUs.
     uint64_t absorbReserveUs() const;
+    bool fixedAbsorbPolicy() const {
+        return m_Parameters.playoutSmoothingWindowedCadence == 7 ||
+            m_Parameters.playoutSmoothingWindowedCadence == 8;
+    }
     // Revision 5 retained phase limit at the current source period.
     uint64_t smoothingPhaseLimitUs() const;
     unsigned int playoutBandIndex() const;
@@ -598,6 +602,10 @@ public:
 private:
     Vrr13::PhaseTrajectory m_PhaseTrajectory;
     Vrr13::ExtraBufferSlew m_ExtraBufferSlew;
+    // A whole source-jitter cycle must show excess phase before replacement.
+    // Individual early stamps can legitimately need more physical spacing.
+    std::array<uint64_t, 32> m_FullRatePhase {};
+    size_t m_FullRatePhaseCount = 0, m_FullRatePhaseNext = 0;
     bool m_BufferLayerChanged = false, m_BufferLayerDrain = false;
     bool m_HaveMappingBasis = false;
     bool m_CorrectedMappingBasis = false;

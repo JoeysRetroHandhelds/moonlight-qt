@@ -568,8 +568,8 @@ bool validateVrrTimingParameters(const VrrTimingParameters& value,
             (value.playoutLateRecovery && value.playoutCatchupPerMille == 0)) {
         return fail("playout_late_recovery must be 0 or 1 and requires nonzero catchup");
     }
-    if (value.playoutSmoothingWindowedCadence > 7) {
-        return fail("playout_smoothing_windowed_cadence must be in 0..7");
+    if (value.playoutSmoothingWindowedCadence > 9) {
+        return fail("playout_smoothing_windowed_cadence must be in 0..9");
     }
     // Revisions before 5 ignore these, so historical snapshots may be layered
     // over current values.

@@ -366,13 +366,13 @@ VrrTimingParameters vrrTimingParametersForSession(
     // Zero preserves both the old smoother and its attribution for replay.
     parameters.playoutSmoothingReadinessBound =
         parameters.playoutResponsiveBuffer >= 6 && config.smoothFrameTiming ? 1 : 0;
-    // Absorb revision 7 retains wider phase-locked smoothing, qualifying and
+    // Absorb revision 8 spends the fixed reserve immediately, qualifying and
     // reseeding uniform local source runs before the longer rate fit catches
     // up. Ordinary Reduce judder uses its tolerance-bounded source-gap policy;
     // historical parameter snapshots retain their explicit revisions.
     parameters.playoutSmoothingWindowedCadence = 2;
     if (config.smoothFrameTiming && config.absorbMicrostutter) {
-        parameters.playoutSmoothingWindowedCadence = 7;
+        parameters.playoutSmoothingWindowedCadence = 8;
         parameters.playoutSmoothingAbsorbReserveUs = uint64_t(options.toleranceUs) * 2;
         parameters.playoutSmoothingAbsorbReservePeriodPerMille = 0;
         parameters.playoutSmoothingResetSlewUs = std::min<uint64_t>(
@@ -389,7 +389,7 @@ VrrTimingParameters vrrTimingParametersForSession(
         // phase budget. Correct only excess beyond T, by at most T per gap.
         // Clean gaps retain the phase: recentering or a learned reserve would
         // change their spacing despite their being within tolerance.
-        parameters.playoutSmoothingWindowedCadence = 4;
+        parameters.playoutSmoothingWindowedCadence = 9;
         parameters.playoutSmoothingMaxLagUs = options.toleranceUs;
         parameters.playoutSmoothingPeriodFeedbackPerMillion = 0;
         parameters.playoutSmoothingReserveMaxUs = 0;
@@ -895,7 +895,7 @@ VrrTimingDecision VrrTimingController::schedule(const PacedFrame& frame,
             // The reserve delays the whole smoothed schedule while Reduce
             // judder is enabled, including frames it cannot smooth, so the
             // schedule does not step by the reserve at every cadence reset.
-            smoothingReserveUs = m_Parameters.playoutSmoothingWindowedCadence == 7 ?
+            smoothingReserveUs = fixedAbsorbPolicy() ?
                 absorbReserveUs() : smoothingReserveEnabled() ? m_SmoothingReserveUs : 0;
             int64_t retimingUs = cadenceSmoothingAdjustUs(
                 cadence, rebased, saturatingAdd(rawBasisUs, smoothingReserveUs),
@@ -921,7 +921,7 @@ VrrTimingDecision VrrTimingController::schedule(const PacedFrame& frame,
             desiredRetimingUs = retimingUs;
             if (readinessBoundedSmoothing && (m_Parameters.playoutSmoothingWindowedCadence < 4 ||
                     m_Parameters.playoutSmoothingWindowedCadence == 6 ||
-                    m_Parameters.playoutSmoothingWindowedCadence == 7)) {
+                    fixedAbsorbPolicy())) {
                 // Decode readiness is already known. Spend only the time left
                 // before the raw slot, retaining its typical render allowance.
                 // A raw-late frame keeps that deadline for real buffer feedback;
@@ -936,7 +936,7 @@ VrrTimingDecision VrrTimingController::schedule(const PacedFrame& frame,
             // to this frame's readiness removes/reapplies that phase on later
             // clean gaps, magnifying them. Revision 4 keeps the phase intact;
             // targetUs still applies the independent known-readiness floor.
-            if (m_Parameters.playoutSmoothingWindowedCadence == 7) {
+            if (fixedAbsorbPolicy()) {
                 // Timing can spend the fixed pad, but cannot create an
                 // additional positive reserve or borrow the input buffer.
                 retimingUs = std::clamp<int64_t>(retimingUs, -int64_t(smoothingReserveUs), 0);
@@ -1029,14 +1029,19 @@ VrrTimingDecision VrrTimingController::schedule(const PacedFrame& frame,
     const uint64_t playoutDelayUs = m_Parameters.playoutInputHitchMissesOnly >= 9 ?
         proposedPlayoutDelayUs : std::min(proposedPlayoutDelayUs, playoutDelayCapUs());
     const bool limitedBuffers = timestampPlayout &&
-        (m_Parameters.playoutInputHitchMissesOnly >= 9 || m_Parameters.playoutSmoothingWindowedCadence == 7);
+        (m_Parameters.playoutInputHitchMissesOnly >= 9 || fixedAbsorbPolicy());
     const int64_t desiredSmoothingUs = smoothingUs;
     if (limitedBuffers) {
         m_ExtraBufferSlew.begin(uint64_t(frame.frameNumber()), nowUs, playoutDelayUs,
             intervalQualityToleranceUs(m_Parameters), int64_t(absorbReserveUs()),
             m_BufferLayerChanged, m_BufferLayerDrain && m_Parameters.playoutInputHitchMissesOnly < 10,
             m_Parameters.playoutInputHitchMissesOnly < 10);
-        smoothingUs = m_ExtraBufferSlew.smoothing(smoothingUs);
+        // A fixed reserve must be spendable on the frame that needs it.
+        // Slewing its occupancy at T/s passes short/long source pairs through
+        // unchanged. Revision 8 already bounds occupancy to [0, 2T]; retain
+        // the slow actuator only for historical smoothing and recovery.
+        if (m_Parameters.playoutSmoothingWindowedCadence < 8)
+            smoothingUs = m_ExtraBufferSlew.smoothing(smoothingUs);
         m_LastSmoothingRetimingUs = smoothingUs - int64_t(smoothingReserveUs);
     }
     const uint64_t renderOffsetUs = m_Parameters.playoutPredictionEnabled ? typicalRenderUs() : m_RenderLeadUs;
@@ -1271,8 +1276,19 @@ VrrTimingDecision VrrTimingController::schedule(const PacedFrame& frame,
         recoveryAddedUs = saturatingAdd(recoveryAddedUs, trajectory.addedUs);
     }
     if (limitedBuffers) {
-        const uint64_t desiredRecoveryUs = targetUs - std::min(targetUs, physicalTargetUs);
-        const uint64_t recoveryUs = m_ExtraBufferSlew.recovery(desiredRecoveryUs);
+        uint64_t desiredRecoveryUs = targetUs - std::min(targetUs, physicalTargetUs);
+        uint64_t recoveryLimitUs = std::numeric_limits<uint64_t>::max();
+        if (m_Parameters.playoutSmoothingWindowedCadence >= 8) {
+            // Recovery and smoothing occupy the same fixed reserve. Neither
+            // can stack another standing delay on top of it. Physical input
+            // readiness and display ownership still take precedence below.
+            const uint64_t budgetUs = fixedAbsorbPolicy() ? absorbReserveUs() : smoothingPhaseLimitUs();
+            const uint64_t occupiedUs = uint64_t(std::max<int64_t>(0, smoothingUs));
+            recoveryLimitUs = budgetUs - std::min(budgetUs, occupiedUs);
+            desiredRecoveryUs = std::min(desiredRecoveryUs, recoveryLimitUs);
+        }
+        const uint64_t recoveryUs = std::min(
+            m_ExtraBufferSlew.recovery(desiredRecoveryUs), recoveryLimitUs);
         targetUs = std::max(physicalTargetUs, saturatingAdd(originalTargetUs, recoveryUs));
         // Keep known input readiness out of the requested phase. Otherwise a
         // late input would move its own scoring deadline and erase the miss.
@@ -1284,7 +1300,8 @@ VrrTimingDecision VrrTimingController::schedule(const PacedFrame& frame,
             trajectory = m_PhaseTrajectory.stats();
         }
         if (!m_InputPercentileBuffer.layerTransitionActive() &&
-            !m_ExtraBufferSlew.draining(desiredSmoothingUs, desiredRecoveryUs)) m_BufferLayerDrain = false;
+            (m_Parameters.playoutSmoothingWindowedCadence >= 8 ||
+             !m_ExtraBufferSlew.draining(desiredSmoothingUs, desiredRecoveryUs))) m_BufferLayerDrain = false;
     }
     // GPU readiness is learned independently from CPU/render preparation.
     // Keep it out of targetUs: it is an earlier start opportunity, not extra
@@ -1436,6 +1453,29 @@ VrrTimingDecision VrrTimingController::schedule(const PacedFrame& frame,
     decision.rebased = rebased;
     decision.diagnosticSourceTimestampUs = rtpUs;
     decision.diagnosticSourceTimestampValid = timestampPlayout && !rebased && !cadence.phaseDiscontinuity;
+
+    // At the display ceiling a scheduled presenter cannot repay an inherited
+    // phase by running faster. Once input protection drains, retaining every
+    // old slot would turn that protection into permanent retiming instead.
+    // Request replacement, never a deadline before physical ownership. The
+    // worker must reserve a proven-ready successor before discarding anything.
+    if (m_Parameters.playoutSmoothingWindowedCadence >= 8 &&
+            m_Parameters.nativeScheduledPresentation && decision.cadenceEligible &&
+            !decision.phaseDiscontinuity && !decision.sourceRateChanged &&
+            m_CadenceSamples.size() >= m_Parameters.minimumCadenceSamples &&
+            m_SourcePeriodUs <= saturatingAdd(m_DisplayPeriodUs, m_DisplayPeriodUs / 1000)) {
+        m_FullRatePhase[m_FullRatePhaseNext] = decision.plannedExtraDelayUs();
+        m_FullRatePhaseNext = (m_FullRatePhaseNext + 1) % m_FullRatePhase.size();
+        m_FullRatePhaseCount = std::min(m_FullRatePhaseCount + 1, m_FullRatePhase.size());
+        // Recover a standing offset, not a high point in the game's ordinary
+        // short/long intervals. Dropping on each high point destroys cadence.
+        if (m_FullRatePhaseCount == m_FullRatePhase.size() &&
+                *std::min_element(m_FullRatePhase.begin(), m_FullRatePhase.end()) >
+                    saturatingAdd(fixedAbsorbPolicy() ? absorbReserveUs() : smoothingPhaseLimitUs(),
+                        intervalQualityToleranceUs(m_Parameters)))
+            decision.trajectory.resyncRecommended = true;
+    }
+    else m_FullRatePhaseCount = 0;
 
     m_Pending.valid = true;
     m_Pending.smoothness = smoothnessSample(decision);
@@ -1777,7 +1817,7 @@ int64_t VrrTimingController::cadenceSmoothingAdjustUs(
     uint64_t playoutDelayUs, uint64_t reserveUs)
 {
     const bool localCadencePolicy = m_Parameters.playoutSmoothingWindowedCadence == 6 ||
-        m_Parameters.playoutSmoothingWindowedCadence == 7;
+        fixedAbsorbPolicy();
     uint64_t localPeriodUs = 0;
     if (m_Parameters.playoutSmoothingWindowedCadence >= 3 && !localCadencePolicy) {
         // A cadence reset drops only the retained phase. The standing reserve
@@ -1799,7 +1839,8 @@ int64_t VrrTimingController::cadenceSmoothingAdjustUs(
         // it must not make an exactly-at-T gap intermittently exceed T.
         const uint64_t sourceGapUs =
             (uint64_t(cadence.rtpDelta) * kMicrosecondsPerSecond + kRtpClockRate / 2) / kRtpClockRate;
-        m_SourceGapSmoothingUs = m_Parameters.playoutSmoothingWindowedCadence >= 5 ?
+        m_SourceGapSmoothingUs = m_Parameters.playoutSmoothingWindowedCadence >= 5 &&
+                m_Parameters.playoutSmoothingWindowedCadence != 9 ?
             Vrr13::sourceGapPhaseUs(sourceGapUs, m_SourcePeriodUs,
                 intervalQualityToleranceUs(m_Parameters), smoothingPhaseLimitUs(),
                 m_Parameters.playoutSmoothingRecenterPerMille, m_SourceGapSmoothingUs,
@@ -1977,7 +2018,12 @@ int64_t VrrTimingController::cadenceSmoothingAdjustUs(
         m_SmoothedPeriodFeedbackRemainder = feedback % 1000000;
         m_SmoothedPeriodUs = static_cast<uint64_t>(std::max<int64_t>(1, periodUs));
     }
-    int64_t adjustUs = errorUs * static_cast<int64_t>(1000 - gainPerMille) / 1000;
+    // A fixed reserve absorbs the whole source displacement that fits inside
+    // it. Blending 15% of every gap back into the output needlessly consumes
+    // physical phase at the display ceiling. Recorded PLL revisions retain
+    // their gain; revision 8 still uses the same qualified rate predictor.
+    int64_t adjustUs = m_Parameters.playoutSmoothingWindowedCadence == 8 ? errorUs :
+        errorUs * static_cast<int64_t>(1000 - gainPerMille) / 1000;
     // The reserve already occupies part of the positive retiming budget. Never
     // present before the mapped source slot, reserve or not.
     adjustUs = std::min(adjustUs, static_cast<int64_t>(
@@ -1991,7 +2037,7 @@ int64_t VrrTimingController::cadenceSmoothingAdjustUs(
 
 uint64_t VrrTimingController::absorbReserveUs() const
 {
-    if ((m_Parameters.playoutSmoothingWindowedCadence != 5 && m_Parameters.playoutSmoothingWindowedCadence != 7) ||
+    if ((m_Parameters.playoutSmoothingWindowedCadence != 5 && !fixedAbsorbPolicy()) ||
             m_Parameters.playoutSmoothingGainPerMille == 0) {
         return 0;
     }
@@ -2012,7 +2058,7 @@ int64_t VrrTimingController::bufferedSmoothingUs(int64_t smoothingUs) const
 {
     return m_Parameters.playoutSmoothingWindowedCadence >= 5 &&
             m_Parameters.playoutSmoothingWindowedCadence != 6 &&
-            m_Parameters.playoutSmoothingWindowedCadence != 7 && !metronomeEnabled() ?
+            !fixedAbsorbPolicy() && m_Parameters.playoutSmoothingWindowedCadence != 9 && !metronomeEnabled() ?
         std::min<int64_t>(smoothingUs, 0) : smoothingUs;
 }
 
@@ -3992,7 +4038,7 @@ uint64_t VrrTimingController::playoutQueueLimitUs() const
     const uint64_t capacity = period * queuedFrameCapacity();
     const uint64_t work = saturatingAdd(m_RenderLeadUs, m_Parameters.presentationSafetyUs);
     const uint64_t smoothing = m_Parameters.playoutSmoothingGainPerMille != 0 ?
-        (m_Parameters.playoutSmoothingWindowedCadence == 7 ? absorbReserveUs() :
+        (fixedAbsorbPolicy() ? absorbReserveUs() :
          saturatingAdd(smoothingPhaseLimitUs(), absorbReserveUs())) : 0;
     const uint64_t occupied = saturatingAdd(work, smoothing);
     return capacity > occupied ? capacity - occupied : 0;

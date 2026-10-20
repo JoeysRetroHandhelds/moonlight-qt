@@ -1,3 +1,135 @@
+Immediate bounded smoothing (2026-10-19, source baseline `3ae5f3b0`):
+new ordinary Reduce judder sessions select cadence revision 9. It retains
+revision 4's source-gap dead zone and total [-T,+T] phase bound, but applies
+that correction on the affected frame instead of slewing it at T per second.
+New Absorb sessions select revision 8: the qualified local-rate predictor
+spends a fixed 2T reserve immediately and fully compensates source displacement
+inside that reserve, rather than blending part of every gap back into output.
+Occupancy remains [0,2T]; it cannot acquire a learned reserve or borrow the
+input buffer. Deliberate recovery shares the unused positive phase budget.
+Recorded revisions 0--7 retain their exact historical behavior. Calibration
+identity already includes the cadence revision. Input policy 10, stable input
+adaptation 5 and receive-clock revision 4 remain unchanged.
+
+These intent bounds are not a hard bound on the graph's Retiming budget.
+That graph publishes `plannedExtraDelayUs()`, including native ownership phase.
+The earlier isolated test disabled input adaptation/clock adjustment and
+bounded only smoothing plus recovery. Its replay also contained total extra
+values above the reserve. It did not establish absence of a full-rate plateau.
+The revised tests check the actual graph metric with the live adaptive policy.
+
+At the exact display ceiling, native scheduled output cannot repay inherited
+phase by showing every frame faster. Shrinking input protection can otherwise
+leave the old delay permanently in ownership phase. Revisions 8/9 request a
+replacement only on qualified, continuous source cadence within 0.1% of the
+physical ceiling, and only when the minimum retiming over 32 frames exceeds
+the positive phase budget plus T. A high point in normal short/long game
+intervals cannot trigger replacement. With actual refresh headroom, ordinary
+recovery remains active without this replacement gate.
+
+The worker reserves a successor before discarding the current frame. It may
+wait at most two source periods (capped at 20 ms) for admission/prepared
+readiness, interruptibly on stop or window transitions. Async decode proof uses
+the backend's existing bounded completion check outside the queue lock. Its
+service time and observation timestamp are consumed once on the next loop.
+Unverified completion keeps the current frame and processes the reserved
+successor next; absent future frames never justify discarding the sole image.
+Readiness and physical ownership floors remain mandatory. The resulting
+occasional replacement is an explicit latency/cadence tradeoff at the ceiling,
+not a guarantee that all source images can be shown after a late presentation.
+
+`sourcegapsmoothing` now compares recorded/corrected policies on 0.5--1 ms
+variation on every source interval at 90, 116 and 120 FPS on a 120 Hz display,
+with both ordinary Reduce judder and Absorb, on worker and scheduled paths.
+Adaptive input buffering, clock adjustment, nonzero submission overhead and
+actual graph-budget assertions remain enabled. Recorded immediate output
+reproduces >=1.7 ms interval-change p99; recorded full-rate Reduce judder also
+reproduces >6 ms processing latency. A separate 100-second seeded-buffer test
+reproduces a sustained 4.5--6.9 ms native phase before replacement recovery.
+Worker fixtures distinguish verified from unavailable GPU readiness and check
+progress, ownership and strict replay separately. These are software/model
+contracts; live display smoothness must be assessed separately. Artifacts are
+under `build/absorb-retiming-contract-20261019/`.
+
+Buffer coverage extension (2026-10-19): `testBufferDisturbanceContracts` runs
+336 live-policy combinations of seven disturbances, native/worker presentation,
+ordinary/Absorb smoothing, T=250/500/1000 us, 116/120 FPS and 0/6000 us seeds.
+Each runs 12000 source frames with adaptation and clock mapping enabled and
+crosses RTP rollover. Disturbances cover deterministic nonperiodic 0--1 ms
+source displacement, three-frame decode-output and native-acceptance delays,
+60 FPS transitions, a source pause, invalid timestamps/rebase, and clock drift.
+Assertions include matching-frame readiness, native spacing from accepted
+targets, shared timestamp intent, actual graph/combined budgets, settled
+processing p99, peak startup/fault latency, duration of excess delay, and bounded
+replacement counts. Missing timestamps explicitly exercise fallback trajectory
+recovery; it does not have the timestamp reserve's component limit. Its real
+latency and eventual recovery remain checked. A 1 ms unabsorbed source
+displacement at the physical ceiling may create ownership phase independently
+of a smaller T; the graph bound accounts for that known source displacement.
+Two disabled controls verify that Absorb alone never activates smoothing.
+Worker coverage additionally charges nonzero successful and retried decode
+waits, preserves observation timestamps and checks exact replay for all four
+readiness cases. Evidence is under `build/buffer-coverage-20261019/`.
+The retried-wait fixture exposed a replay audit blind spot: a failed wait with
+nonzero service time was incorrectly required to prove GPU completion. When
+the trace explicitly supplies `decode_readiness_observed=0`, replay now accepts
+an unchanged decoder-output boundary only if the wait fits between dequeue and
+decision. Missing-state historical captures retain the previous strict rule;
+claimed completion, impossible wait durations and invalid ordering remain
+rejected. Controller replay and production timing policy are unchanged.
+
+Trace regression gate (2026-10-19): replay's `Distribution` and
+`SenderCadenceTracker` now live in `tests/vrr/vrrreplaymetrics.h` and are used
+unchanged by replay and `tst_vrrtracemetrics`. The new test checks independent
+tail ranks, missing durations, sender fidelity versus output evenness, hitch
+thresholds/attribution, source versus delivery-gap denominators, matching
+CPU/display graph lanes, and red-marker allowance semantics. The maintained
+trace-question/test mapping is in `tests/vrr/README.md`.
+`run_trace_contracts.py` requires named critical targets, runs all built VRR
+suites and strictly replays four newly generated worker readiness fixtures.
+Each run uses a fresh artifact directory and checks process exits, exact state,
+nonempty replayed population and sequence/timestamp/row/session integrity.
+Windows CI calls the same gate. An assertion-source audit and executing release
+assertion sentinel prevent NDEBUG from turning test assertions into no-ops.
+This repairs missing assertion guards in receive-clock/cache-identity tests
+and the corresponding Linux feedback/scanout fixtures. It does not change
+production timing or certify hardware scanout from a software model.
+
+Ultracode coverage hardening (2026-10-19): the integrated input contract target
+adds physically timed downstream work with a genuine-input-miss control,
+fractional cadence near multiple display ceilings and expiry of earned input
+protection through invalid observations/epochs. Metric controls add partial
+populations, non-divisible percentile ranks, uncertainty, clock origins/restart,
+expiry and delayed image identity. They exposed one scoring defect: unavailable
+local decode/submission timestamps could become a predecessor and bridge clean
+client-spacing evidence across a gap. The shared tracker now breaks adjacency
+for missing local timestamps while retaining valid RTP/source zero. This does
+not change the pacing policy. Runner validation rejects malformed/contradictory
+result populations and leaves failed runs incomplete; replayed equals scheduled,
+delivered bounds scheduled, and presented is bounded by scheduled. Adversarial
+runner tests exercise main(), and eight isolated scoring mutations are rejected
+by release assertions. The workflow evidence is under
+`.workflow/ultracode/trace-contract-hardening-20261019/` and build artifacts under
+`build/ultracode-trace-contracts-20261019/`.
+
+Watcher round 2 (2026-10-19): input regressions now check scheduled delay
+through earned growth and expiry, in addition to observer statistics. Controller
+copies pinning the output to 1000 or 6000 us fail those checks. Histogram tests
+constrain exact known bucket endpoints and sparse-page ranks, preventing both
+understatement and arbitrary inflation of reported latency. Strict replay also
+joins a resync reservation to the next owned image and its proof kind, rather
+than accepting any larger frame ID and valid enum. Prepared proof uses the
+job's stage-ready time; retained decode waits must prove completion by the
+drop. A precompleted image may be rechecked after reservation, so that later
+upper bound does not disprove the earlier readiness claim. Stop/suspend may
+discard the matching image without stage telemetry. An unresolved reservation
+fails lifecycle integrity. The regression gate recomputes valid capture hashes
+for wrong-identity, wrong-proof and missing-successor controls and requires
+causal lifecycle rejection, alongside four exact valid fixtures. These are
+diagnostic/test changes; production pacing policy is unchanged. Evidence is
+under `build/ultracode-watcher-round-2/` and the preceding workflow's
+`watcher-round-2/` directory.
+
 Rolling required-buffer convergence (2026-10-17, revision 5): new adaptive
 sessions select `playout_input_stable_adaptation=5`. This replaces revision 4's
 hard historical-score hold and revision 3's speculative plateau reductions.
@@ -231,8 +363,9 @@ resetting history at layer changes. Historical policies 0--9 remain explicit
 for replay, and cache identity includes policy 10.
 
 Nightly VRR integration (2026-10-17, master baseline `f0507ea5`):
-new adaptive sessions select input-hitch policy 9; Absorb microstutter selects
-smoothing revision 7. These supersede the historical policy descriptions below.
+that baseline selected input-hitch policy 9 and Absorb smoothing revision 7.
+Current sessions select input policy 10 and smoothing revisions 8/9 as described
+above; the shared actuator details in this historical section apply to revision 7.
 
 Policy 9 caps ordinary input-buffer growth and release at the selected interval
 tolerance T per second. Intentional smoothing and recovery share the remaining
@@ -3964,20 +4097,24 @@ timestamp production behavior.
 
 ### 8.3 Cadence smoothing
 
-Current ordinary Reduce judder sessions (2026-10-16) use the tolerance-bounded
-source-gap policy, revision 4: ignore gaps within T of the fitted period,
+Current ordinary Reduce judder sessions (2026-10-19) use the tolerance-bounded
+source-gap policy, revision 9: ignore gaps within T of the fitted period,
 correct only the excess by at most T per gap, and keep the total retained phase
 within +/-T. There is no smoothing reserve or recentering; clean source gaps
 keep their spacing even when earlier gaps left a retained phase. Qualification
 uses consecutive valid RTP identities; rate/phase changes, rebases and invalid
 or nonadjacent source timing reset the phase. The actual target still respects
 known readiness, input buffering and display-spacing/recovery constraints.
+Revision 9 preserves revision 4's phase rules but applies the correction
+immediately, bypassing the historical T-per-second smoothing actuator.
 
-**Absorb microstutter (adds latency)** separately selects revision 6: the
-phase-locked smoother with uniform local source-cadence qualification described
-at the top, its wider learned reserve (at most 5 ms at p99.5) and 8 ms lag. Revision 5
-(daily.188) remains replayable through explicit parameters but is not selected.
-The earlier regression/rollback evidence at the top predates this restoration.
+**Absorb microstutter (adds latency)** separately selects revision 8: the
+qualified local cadence predictor with a fixed 2T reserve, immediately spending
+the displacement that fits within it. Deliberate recovery shares the unused
+positive budget. Revisions 5--7 remain replayable through explicit parameters.
+Actual retiming can include mandatory readiness/display phase beyond the
+intent reserve; persistent excess at the native ceiling requires the ready
+successor replacement contract described at the top.
 
 Recorded revision 5 (daily.188) used the source-gap policy. A consecutive valid RTP
 gap G is compared with the fitted source period P. Error through the configured

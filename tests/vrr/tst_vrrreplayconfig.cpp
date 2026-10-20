@@ -55,6 +55,7 @@ private slots:
     void rationalDisplayTiming();
     void busyWorkerReadinessFloor();
     void decodeReadinessOrder();
+    void trajectorySuccessorProof();
     void recordedWorkerQueueCapacity();
 };
 
@@ -108,20 +109,20 @@ void VrrReplayConfigTest::windowedSmoothingPolicyRoundTrip()
     QString error;
     auto production = vrrTimingParametersForSession(VrrSessionConfig{});
     QVERIFY2(applyVrrReplayControllerSnapshot(vrrTimingParametersToJson(production), parameters, error), qPrintable(error));
-    QCOMPARE(parameters.playoutSmoothingWindowedCadence, uint64_t(4));
+    QCOMPARE(parameters.playoutSmoothingWindowedCadence, uint64_t(9));
     QCOMPARE(parameters.playoutSmoothingRecoveryUs, uint64_t(0));
     QCOMPARE(parameters.playoutSmoothingMaxLagUs, production.playoutIntervalToleranceUs);
     QCOMPARE(parameters.playoutSmoothingReserveMaxUs, uint64_t(0));
     QCOMPARE(parameters.playoutSmoothingResetSlewUs, uint64_t(0));
     QVERIFY(!applyVrrReplayControllerSnapshot(
-        {{"playout_smoothing_windowed_cadence", 8}}, parameters, error));
-    QCOMPARE(parameters.playoutSmoothingWindowedCadence, uint64_t(4));
+        {{"playout_smoothing_windowed_cadence", 10}}, parameters, error));
+    QCOMPARE(parameters.playoutSmoothingWindowedCadence, uint64_t(9));
     VrrSessionConfig absorbing;
     absorbing.absorbMicrostutter = true;
     VrrTimingParameters absorbed;
     QVERIFY2(applyVrrReplayControllerSnapshot(
         vrrTimingParametersToJson(vrrTimingParametersForSession(absorbing)), absorbed, error), qPrintable(error));
-    QCOMPARE(absorbed.playoutSmoothingWindowedCadence, uint64_t(7));
+    QCOMPARE(absorbed.playoutSmoothingWindowedCadence, uint64_t(8));
     QCOMPARE(absorbed.playoutSmoothingResetSlewUs, uint64_t(250));
     QCOMPARE(absorbed.playoutSmoothingMaxLagUs, uint64_t(1000));
     QCOMPARE(absorbed.playoutSmoothingReserveMaxUs, uint64_t(0));
@@ -2641,6 +2642,81 @@ void VrrReplayConfigTest::decodeReadinessOrder()
         1000, 6888, 1020, 6803, 6890, 90, true, true, true, true));
     QVERIFY(!vrrDecodeReadinessOrderValid(
         1000, 1000, 1020, 0, 0, 0, false, true, true, true));
+    // Explicitly unverified waits consume service time without proving a GPU
+    // completion timestamp. Legacy captures cannot infer this missing state.
+    QVERIFY(vrrDecodeReadinessOrderValid(
+        1000, 1000, 1020, 1030, 1300, 250, true, true, true, false, true));
+    QVERIFY(!vrrDecodeReadinessOrderValid(
+        1000, 1000, 1020, 1030, 1300, 250, true, true, true, false, false));
+    QVERIFY(!vrrDecodeReadinessOrderValid(
+        1000, 1000, 1020, 1030, 1200, 250, true, true, true, false, true));
+    QVERIFY(!vrrDecodeReadinessOrderValid(
+        1000, 1000, 1020, 1010, 1300, 250, true, true, true, false, true));
+    QVERIFY(!vrrDecodeReadinessOrderValid(
+        1000, 1000, 1020, 1030, 1300, 250, true, true, true, true, true));
+    QVERIFY(!vrrDecodeReadinessOrderValid(
+        1000, 1000, 1020, 0, 0, 250, false, true, true, false, true));
+}
+
+void VrrReplayConfigTest::trajectorySuccessorProof()
+{
+    VrrTrajectorySuccessorAudit audit;
+    QVERIFY(audit.complete());
+    QVERIFY(audit.expect(37, 38, 2, 1500));
+    QVERIFY(!audit.complete()); // Truncation cannot leave a proof unresolved.
+    QVERIFY(audit.observe(39, false, true, false, false, 0, 0));
+    QVERIFY(!audit.complete()); // Unrelated admission/terminal rows may interleave.
+    QVERIFY(audit.observe(38, true, false, false, true, 1500, 1800));
+    QVERIFY(audit.complete());
+
+    QVERIFY(audit.expect(37, 39, 2, 1500));
+    QVERIFY(!audit.observe(38, true, false, false, true, 1500, 1800));
+    QVERIFY(audit.complete()); // The worker cannot schedule past its reserved image.
+
+    QVERIFY(audit.expect(37, 38, 1, 1500));
+    QVERIFY(!audit.observe(38, true, false, false, true, 1400, 1800));
+    QVERIFY(audit.expect(37, 38, 2, 1500));
+    QVERIFY(!audit.observe(38, true, false, true, true, 1400, 1450));
+    QVERIFY(audit.expect(37, 38, 1, 1500));
+    QVERIFY(audit.observe(38, true, false, true, true, 1400, 1500));
+    QVERIFY(audit.expect(37, 38, 1, 1500));
+    QVERIFY(!audit.observe(38, true, false, true, true, 1400, 1501));
+    QVERIFY(audit.expect(37, 38, 2, 1500));
+    QVERIFY(!audit.observe(38, true, false, false, true, 1501, 1800));
+    QVERIFY(audit.expect(37, 38, 2, 1500));
+    QVERIFY(!audit.observe(38, true, false, false, false, 1400, 1800));
+    QVERIFY(audit.expect(37, 38, 2, 1500));
+    QVERIFY(!audit.observe(38, true, false, false, true, 0, 1800));
+    // A synchronous image known complete on admission need not wait again.
+    QVERIFY(audit.expect(37, 38, 2, 1500));
+    QVERIFY(audit.observe(38, true, false, false, false, 1400, 0, 1600, 1400));
+    // A later recheck is an upper bound, not proof that completion was late.
+    QVERIFY(audit.expect(37, 38, 2, 1500));
+    QVERIFY(audit.observe(38, true, false, false, true, 1650, 0, 1600, 1400));
+    QVERIFY(audit.expect(37, 38, 2, 1500));
+    QVERIFY(!audit.observe(38, true, false, false, false, 1650, 0, 1600, 1400));
+    QVERIFY(audit.expect(37, 38, 2, 1500));
+    QVERIFY(!audit.observe(38, true, false, false, true, 1650, 0, 1600, 1550));
+    QVERIFY(audit.expect(37, 38, 1, 1500));
+    QVERIFY(!audit.observe(38, true, false, true, true, 1400, 0));
+    QVERIFY(audit.expect(37, 38, 2, 1500));
+    QVERIFY(!audit.observe(38, false, false, false, false, 0, 0));
+
+    // Stop or suspension can cancel the reserved image before scheduling.
+    // Preserve identity while accepting deliberately absent stage telemetry.
+    for (uint64_t proof : {1ULL, 2ULL}) {
+        QVERIFY(audit.expect(37, 38, proof, 1500));
+        QVERIFY(audit.observe(38, false, true, false, false, 0, 0));
+        QVERIFY(audit.complete());
+    }
+    for (uint64_t proof : {0ULL, 3ULL})
+        QVERIFY(!audit.expect(37, 38, proof, 1500));
+    QVERIFY(!audit.expect(37, 37, 2, 1500));
+    QVERIFY(!audit.expect(37, 36, 2, 1500));
+    QVERIFY(!audit.expect(37, 38, 2, 0));
+    QVERIFY(audit.expect(37, 38, 2, 1500));
+    QVERIFY(!audit.expect(37, 39, 2, 1500));
+    QVERIFY(audit.observe(38, true, false, false, true, 1400, 1800));
 }
 
 void VrrReplayConfigTest::recordedWorkerQueueCapacity()
