@@ -357,8 +357,8 @@ bool validateVrrTimingParameters(const VrrTimingParameters& value,
     const auto fail = [&error](const char* text) { error = text; return false; };
     if (value.playoutInputStableAdaptation > 5)
         return fail("stable input adaptation must be between 0 and 5");
-    if (value.playoutInputHitchMissesOnly > 10)
-        return fail("input hitch-miss policy must be between 0 and 10");
+    if (value.playoutInputHitchMissesOnly > 11)
+        return fail("input hitch-miss policy must be between 0 and 11");
     if (value.playoutPredictionOnly > 1 || value.playoutSubmissionEstimateFallback > 1 ||
             value.playoutRequireDisplayEvents > 1 ||
             value.playoutNativeHitchAdaptation > 1 || value.playoutReadinessDrivenAdaptation > 1 ||

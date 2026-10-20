@@ -24,9 +24,11 @@ Historical revision-2 finite-trial tests remain unchanged.
 ## Adaptive buffer regression gate
 
 `tst_vrrbufferregressions` is the fast check to run after any change to the
-input buffer, its rate layers, catch-up or smoothing. It takes about 4 s (its
+input buffer, its rate layers, catch-up or smoothing. It takes about 7 s (its
 scenarios run in parallel) and covers every preset (Low Latency, Balanced,
-Smooth) with smoothing off, Reduce judder (the default) and Absorb.
+Smooth) with smoothing off, Reduce judder (the default) and Absorb, each for a
+presenter that can latch (Windows D3D11) and one that cannot (Linux Vulkan
+present modes without latch protection; results labeled `@no-latch`).
 
 ```text
 build\tests-vrr\vrr\release\tst_vrrbufferregressions.exe              # everything
@@ -62,10 +64,11 @@ The gate avoids both problems:
 | `within-allowance` | misses inside the profile allowance buy no latency | buffers that looked too high |
 | `earn-protection` | late input beyond the allowance earns protection at the rise rate, keeps hitches inside the allowance, never exceeds lateness beyond T | 5b062c4b slow relearning, blocked growth, over-buffering |
 | `plateau-history` | protection holds while its evidence is inside the history, releases once it expires, does not oscillate | 2ccca878, 0d2f9adc, 7d1148f9 |
-| `rate-round-trip` | a slower rate adds no delay, layer steps stay within T, a returning rate restores protection at once | 5b062c4b, 1a5bef09, 181415ec |
+| `rate-round-trip` | a slower rate adds no delay, layer steps stay within T, a returning rate restores protection at once and keeps its evidence for the rest of its history | 5b062c4b, 1a5bef09, 181415ec |
+| `ordinary-variation` | a 116 -> 90 -> 116 FPS ramp and random 90-116 FPS dwell (with the long tails that once switched a 91 FPS layer) never switch layers, keep protection, and scale with a larger need like a steady rate; three-frame stall excursions cost no protection | 1a5bef09 false mid-band switches holding the buffer flat |
 | `rate-drop` | a rate drop that moves the mapping gives the excess back promptly | f96b0524 |
 | `clock-drift` | +/-50 ppm drift neither ratchets nor erodes retained protection | 409a5661 |
-| `loss-and-downstream` | lost-packet frames, slow preparation and client decoder backlog buy no input buffer | 39d10abf, post-input work, own backlog |
+| `loss-and-downstream` | lost-packet frames, slow preparation and client decoder backlog above the typical handoff buy no input buffer | 39d10abf, post-input work, own backlog |
 | `catch-up-carry` | carry drains between late frames despite wake-up overshoot | 3c32553e |
 | `invalid-expiry` | protection expires through ineligible frames and repeated epochs | 75e97d26 |
 | `smoothing-budget` | Reduce judder (T) and Absorb (2T) stay inside their budgets, buy no input buffer, and actually even out short/long pairs | smoothing revisions 8/9 and the T-per-second actuator they replaced |
@@ -75,12 +78,15 @@ evidence. They print as `KNOWN` on every run without failing the gate, so CI
 and nightly releases keep running. `--strict` fails them. Once none of an
 entry's checks fail, the gate fails with `FIXED KNOWN REGRESSION` until the
 entry is deleted, so a fix hardens the contract instead of leaving it advisory.
-The open entry is `rate-drop`: input policy 10 drains layer decreases at the
-normal release law, which brings back f96b0524's excess latency after an
-abrupt rate drop (see architecture.md, "Known discrepancy").
+There are no open entries. The first, `rate-drop`, found that input policy 10
+drained layer decreases at the normal release law, bringing back f96b0524's
+excess latency after an abrupt rate drop; policy 11 fixed it and its entry was
+deleted (see architecture.md, "Rate-drop layer drain").
 
-The simulation follows the worker's call order with deterministic input. It
-measures controller decisions, not driver scheduling or optical scanout.
+The simulation follows the worker's call order with deterministic input. Every
+frame carries the 0.1 ms reassembly-to-decode handoff measured in real
+captures. It measures controller decisions, not driver scheduling or optical
+scanout.
 
 ## Trace questions and their regression contracts
 
@@ -2144,6 +2150,24 @@ allowances, fresh-miss interruption and input/extra-delay independence. Policy 9
 fixtures retain its historical slow trials and T/frame layer drain. Live-controller
 round trips cover policy 10 with smoothing on and off. Replay configuration
 round-trips policies 9 and 10 and rejects unsupported versions.
+
+### Rate-drop layer drain (input policy 11)
+
+Policy 11 is policy 10 plus policy 9's drain of a smaller layer by at most T per
+fresh frame. `tst_vrrbufferregressions` rate-drop showed policy 10 keeping a rate
+drop's moved mapping as 3-4.6 ms of excess latency for 15 s (f96b0524); policy 11
+clears it within about 3 s, and rate-round-trip still bounds each layer step by
+T. Explicit policy-10 fixtures, including the recorded `inputtracechunks`
+capture, keep the release-law drain. Replay configuration accepts 0-11.
+
+Policy 11 also keeps the steady reassembly-to-decode handoff in input readiness.
+The 2026-10-19 capture spends 75-207 us there on every frame (p10-p99); earlier
+policies excluded all of it as backlog, although the mapping includes it, so
+every requirement read about 0.1 ms low. Only queue time above the median of
+the last 64 frames is now backlog. With that handoff, the gate's earn-protection
+hitch rate rises above the allowance under the old accounting; decoder-backlog
+spikes still buy no buffer. The ordinary-variation scenario checks that the
+faster drain cannot fire inside one operating band.
 
 Coverage reporting has a separate 10 s window alongside the selected learning
 history. Tests cover fresh misses, expiry, invalid and stale callbacks, no fake

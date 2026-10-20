@@ -1517,7 +1517,7 @@ void testActualControllerRequiresAnInputHitch() {
     session.latencyMode=1;session.smoothFrameTiming=false;session.experimentalInputPercentilePpm=1;
     session.timingOptions={1000,9950,10,500};
     auto base=vrrTimingParametersForSession(session);
-    check(base.playoutInputHitchMissesOnly==10 && base.playoutInputStableAdaptation==5,"production keeps preventable-miss scoring with stable target adaptation");
+    check(base.playoutInputHitchMissesOnly==11 && base.playoutInputStableAdaptation==5,"production keeps preventable-miss scoring with stable target adaptation");
     base.playoutDelayStartSeedUs=1000;base.playoutDelayMinimumUs=1000;base.playoutDelayMaximumUs=6000;
     base.playoutDelayMaximumPeriodPerMille=base.playoutDelayCapSourcePeriodPerMille=0;
     base.playoutInputLearningTrim=0;

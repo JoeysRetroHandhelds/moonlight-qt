@@ -44,7 +44,7 @@ RunResult runSustainedDownstreamLoad(bool injectInputHitches)
     // on clean input. Keep this seeded so the timing-wait check has a causal
     // source of slack rather than a fabricated local/source clock offset.
     policy.playoutDelayStartSeedUs = 6000;
-    check(policy.playoutInputHitchMissesOnly == 10 &&
+    check(policy.playoutInputHitchMissesOnly == 11 &&
           policy.playoutInputStableAdaptation == 5,
           "integration uses the selected production input policy");
     VrrTimingController controller(session, true, policy);

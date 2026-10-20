@@ -222,7 +222,10 @@ VrrTimingParameters vrrTimingParametersForSession(
     // Direct empirical controllers are evaluated separately before UI semantics change.
     parameters.playoutAbsorbedJitterRelease = 0;
     parameters.playoutInputPercentileEnabled = config.experimentalInputPercentilePpm != 0;
-    parameters.playoutInputHitchMissesOnly = parameters.playoutInputPercentileEnabled ? 10 : 0;
+    // Policy 11 is policy 10 plus policy 9's T-per-fresh-frame drain of a
+    // smaller layer. Draining at the release law kept a rate drop's moved
+    // mapping as several ms of excess latency for 25-30 s (f96b0524).
+    parameters.playoutInputHitchMissesOnly = parameters.playoutInputPercentileEnabled ? 11 : 0;
     parameters.playoutInputStableAdaptation = parameters.playoutInputPercentileEnabled ? 5 : 0;
     // Record lifecycle semantics explicitly; missing fields in older captures
     // retain their historical eviction and reacquisition behavior.
@@ -512,6 +515,8 @@ void VrrTimingController::reset()
     m_ReadinessFloorUpdatedUs = 0;
     m_CleanSpacingFrames = 0;
     m_PhaseErrorFrames = 0;
+    // The decoder handoff is a client property; a source rebase keeps it.
+    m_DecoderQueueHistory.clear();
     clearTimeline(false);
 }
 
@@ -1498,7 +1503,7 @@ VrrTimingDecision VrrTimingController::schedule(const PacedFrame& frame,
     // output is only GPU submission, and GPU decode variation is jitter the
     // buffer must cover. Completions observed after a queue wait are bounded
     // by output + typical GPU time so our own queueing is not counted.
-    const auto inputBacklog = saturatingAdd(frame.decoderQueueUs(), frame.decodeHoldUs());
+    const auto inputBacklog = saturatingAdd(inputDecoderBacklogUs(frame), frame.decodeHoldUs());
     const auto decodeReadyUs = estimatedDecodeCompleteUs(frame);
     const auto inputReadyUs = decodeReadyUs - std::min(decodeReadyUs, inputBacklog);
     m_Pending.inputRequiredUs = signedDifference(inputReadyUs, m_Pending.inputSlotUs);
@@ -3206,6 +3211,23 @@ uint64_t VrrTimingController::catchupCarryLimitUs() const
         scaledPerMille(m_SourcePeriodUs, m_Parameters.playoutCatchupCarryLimitPeriodPerMille) : 0;
     if (fixedUs == 0) return shareUs;
     return shareUs == 0 ? fixedUs : std::min(fixedUs, shareUs);
+}
+
+uint64_t VrrTimingController::inputDecoderBacklogUs(const PacedFrame& frame)
+{
+    const uint64_t queueUs = frame.decoderQueueUs();
+    if (m_Parameters.playoutInputHitchMissesOnly < 11 || frame.reassembledUs() == 0)
+        return queueUs;
+    // Policy 11 keeps the steady reassembly-to-decode handoff (about 0.1 ms on
+    // every frame of the 2026-10-19 captures) in readiness. The source mapping
+    // includes it, so excluding all of it biased every requirement low by its
+    // length. Only queue time above the recent typical handoff is backlog.
+    constexpr size_t kDecoderQueueHistoryFrames = 64;
+    constexpr size_t kDecoderQueueBaselineMinimumFrames = 16;
+    const uint64_t backlogUs = m_DecoderQueueHistory.size() < kDecoderQueueBaselineMinimumFrames ? queueUs :
+        queueUs - std::min(queueUs, percentile(m_DecoderQueueHistory, 50));
+    appendBounded(m_DecoderQueueHistory, queueUs, kDecoderQueueHistoryFrames);
+    return backlogUs;
 }
 
 uint64_t VrrTimingController::inputRecoveryCreditUs() const

@@ -13,7 +13,8 @@
 // allowance, retiming budgets) plus explicit slack, not from whatever the
 // implementation happened to produce. Frames follow the worker's call order.
 // Presented stutter is measured from the simulated submissions themselves,
-// never from the controller's own miss counters.
+// never from the controller's own miss counters. Every scenario runs for a
+// presenter that can latch and one that cannot ("@no-latch").
 //
 // Run with scenario names to select a subset, e.g.
 //   tst_vrrbufferregressions start-release rate-round-trip
@@ -44,6 +45,14 @@ std::mutex g_KnownLock;
 // in scenario order. The bool marks a failure line for stderr.
 using Log = std::vector<std::pair<bool, std::string>>;
 thread_local Log* t_Log = nullptr;
+// Every scenario runs for presenters that can latch (Windows D3D11) and that
+// cannot (Linux Vulkan present modes without latch protection).
+thread_local bool t_CanLatch = true;
+
+std::string scenarioName(const char* scenario)
+{
+    return std::string(scenario) + (t_CanLatch ? "" : "@no-latch");
+}
 
 void emit(bool failure, const char* format, va_list args)
 {
@@ -73,21 +82,23 @@ void reportLine(bool failure, const char* format, ...)
 // print on every run without failing the gate (--strict fails them). Once
 // none of an entry's checks fail any more, the gate fails until the entry is
 // deleted, so a fix hardens the contract instead of leaving it advisory.
+// Example entry:
+//   {"rate-drop/", {"a rate drop gives back the moved mapping promptly", nullptr},
+//    "what fails, since which commit, and the evidence", 0, 0},
 struct KnownRegression {
     const char* scenarioPrefix;
     const char* contracts[2];
     const char* evidence;
     size_t failed, passed;
 };
-KnownRegression g_Known[] = {
-    {"rate-drop/", {"a rate drop gives back the moved mapping promptly", "no excess remains 10 s after a rate drop"},
-     "f96b0524 reintroduced by input policy 10 (181415ec): layer decreases drain at the 250 us/s release law, so the "
-     "moved mapping keeps 3-4.6 ms of extra latency for 15 s after a 116 -> 30 FPS drop. Revisions 6/8 with the "
-     "rate-drop snap and revision 9's T-per-frame drain return it within about 3 s.", 0, 0},
+std::vector<KnownRegression> g_Known = {
 };
 
-KnownRegression* knownRegression(const std::string& scenario, const char* contract)
+KnownRegression* knownRegression(std::string scenario, const char* contract)
 {
+    // Entries name the scenario once; they cover both presenter variants.
+    const auto variant = scenario.find("@no-latch");
+    if (variant != std::string::npos) scenario.erase(variant, std::strlen("@no-latch"));
     for (auto& known : g_Known) {
         if (scenario.compare(0, std::strlen(known.scenarioPrefix), known.scenarioPrefix) != 0) continue;
         for (const char* listed : known.contracts)
@@ -128,7 +139,7 @@ constexpr Smoothing kSmoothing[] = {
 
 std::string label(const char* scenario, const Preset& preset, const Smoothing& smoothing)
 {
-    return std::string(scenario) + "/" + preset.name + "/" + smoothing.name;
+    return scenarioName(scenario) + "/" + preset.name + "/" + smoothing.name;
 }
 
 // xorshift64*: identical sequences on every standard library.
@@ -162,8 +173,10 @@ struct Input {
     uint64_t prepareUs = 500;
     // Fixed wake-up/present-call delay after the target (3c32553e: 0.28 ms).
     uint64_t presentLatencyUs = 0;
-    // Wait between reassembly and decode submission: client decoder backlog.
-    uint64_t decoderQueueUs = 0;
+    // Wait between reassembly and decode submission. Real clients hand every
+    // frame over in about 0.1 ms (2026-10-19 capture: p10 75, p50 97, p99
+    // 207 us); larger waits are client decoder backlog.
+    uint64_t decoderQueueUs = 100;
 };
 
 // One production controller driven through the worker's per-frame calls.
@@ -171,7 +184,7 @@ class Stream {
 public:
     explicit Stream(const VrrSessionConfig& session, uint64_t seedUs = 0, int64_t driftPpm = 0) :
         m_Session(session),
-        m_Controller(session, true, vrrTimingParametersForSession(session)),
+        m_Controller(session, t_CanLatch, vrrTimingParametersForSession(session)),
         m_DriftPpm(driftPpm)
     {
         // Same call the worker makes with the previous session's settled delay.
@@ -188,9 +201,9 @@ public:
         f.decodedUs = f.sourceUs + kBaseLatencyUs + input.latenessUs + input.decoderQueueUs;
         // Start near the RTP wrap so every long scenario crosses it.
         PacedFrame frame(nullptr, m_FrameNumber++, uint32_t(m_Ticks + 0xFFF00000u), true, f.decodedUs);
-        // Reassembly normally hands straight to the decoder. Reassembled-to-
-        // submit time is client decoder backlog, which input accounting
-        // excludes by design; a constant queue would under-protect by its length.
+        // Input accounting excludes decoder backlog. The steady handoff is part
+        // of readiness, like the mapping that measures it; excluding it would
+        // under-protect every frame by its length.
         const uint64_t submitUs = f.decodedUs - 600;
         frame.setDeliveryTimeline(submitUs - input.decoderQueueUs - 200, submitUs - input.decoderQueueUs, submitUs);
         frame.setLostPackets(input.lostPackets);
@@ -546,6 +559,123 @@ void testRateRoundTripRestoresProtection()
     }
 }
 
+// 5b. Ordinary rate variation inside one operating band never switches
+// layers: 90-116 FPS is one layer. A false switch restored or drained another
+// layer's buffer and held it flat instead of following the measured need.
+// Brief excursions (a three-frame host stall) may be detected by the fast
+// layer check, but must not cost protection either. Regression: 1a5bef09
+// (layers must be confirmed and at least 30 FPS apart) and the 91 FPS false
+// switch on brief long tails.
+void testOrdinaryVariationKeepsOneLayer()
+{
+    const auto ticksForRate = [](double fps) { return uint32_t(90000.0 / fps + 0.5); };
+    for (const auto& preset : kPresets) for (const auto& smoothing : kSmoothing) {
+        const std::string name = label("ordinary-variation", preset, smoothing);
+        const auto session = vrrProductionSession(preset.mode, 116, 120, smoothing.smooth, smoothing.absorb);
+        // The same disturbance sequence at a varying and at a steady rate.
+        struct Run { uint64_t switches, learned, rampMinimum, pad, need; double grownSeconds; size_t hitches; };
+        const auto run = [&](bool varying) {
+            Stream s(session, 1000);
+            Rng rng(113 + uint64_t(preset.mode)), rateRng(127);
+            uint64_t spikeUs = 3000, elapsedTicks = 0;
+            size_t counter = 0;
+            const auto step = [&](uint32_t ticks) {
+                s.step(ticks, {rng.below(400) + (counter++ % 20 == 10 ? spikeUs : 0)});
+                elapsedTicks += ticks;
+            };
+            const auto jittered = [&](double fps) {
+                return varying ? uint32_t(int64_t(ticksForRate(fps)) + int64_t(rateRng.below(55)) - 27) : k116Ticks;
+            };
+            const auto switches = [&] {
+                return s.controller().bufferAudit(s.frames().back().submittedUs, s.frames().back().appliedUs).layerSwitches;
+            };
+            while (elapsedTicks < 20 * 90000) step(k116Ticks);
+            const uint64_t switchesBefore = switches();
+            const uint64_t learned = s.frames().back().appliedUs;
+            const size_t rampBegin = s.size();
+            // A smooth 116 -> 90 -> 116 FPS ramp with 0.3 ms of host jitter.
+            for (uint64_t begin = elapsedTicks; elapsedTicks - begin < 20 * 90000;) {
+                const double x = double(elapsedTicks - begin) / (20 * 90000);
+                step(jittered(116 - 26 * (x < 0.5 ? 2 * x : 2 - 2 * x)));
+            }
+            const size_t wanderBegin = s.size();
+            const uint64_t rampMinimum = minimum(s.frames(), rampBegin, wanderBegin, applied);
+            // Random dwell across the band; at its lower end, the 12.6/13.3/
+            // 13.6 ms tails that once switched a 91 FPS layer. The need grows.
+            spikeUs = preset.mode == 2 ? 4000 : 4500;
+            size_t nextTail = 300;
+            for (uint64_t begin = elapsedTicks; elapsedTicks - begin < 20 * 90000;) {
+                const double fps = 90 + double(rateRng.below(27));
+                const size_t dwell = 30 + size_t(rateRng.below(200));
+                for (size_t i = 0; i < dwell && elapsedTicks - begin < 20 * 90000; ++i) {
+                    step(jittered(fps));
+                    if (--nextTail == 0) {
+                        if (varying && fps <= 100) for (uint32_t tail : {1138u, 1198u, 1224u}) step(tail);
+                        nextTail = 300;
+                    }
+                }
+            }
+            const auto& f = s.frames();
+            Run result{switches() - switchesBefore, learned, rampMinimum, s.padUs(), spikeUs - s.toleranceUs(), -1.0, 0};
+            for (size_t i = wanderBegin; i < f.size(); ++i) {
+                if (f[i].appliedUs + result.pad >= result.need - 250) {
+                    result.grownSeconds = double(f[i].sourceUs - f[wanderBegin].sourceUs) / 1e6;
+                    break;
+                }
+            }
+            size_t lastTen = f.size();
+            while (lastTen > wanderBegin && f.back().sourceUs - f[lastTen - 1].sourceUs < 10000000) --lastTen;
+            result.hitches = hitches(f, lastTen, f.size(), s.toleranceUs());
+            return result;
+        };
+        const Run varying = run(true), steady = run(false);
+        const uint64_t pad = varying.pad;
+        // A larger need is covered once its misses exceed the allowance in the
+        // history, then rises at the rise rate. Lower rates collect those misses
+        // more slowly, hence the margin; a flat-held buffer never gets there.
+        const double growBound = steady.grownSeconds * 1.5 + 1.0;
+        const size_t hitchBound = steady.hitches * 3 / 2 + 5;
+        report("%-52s switches %2" PRIu64 " learned %5" PRIu64 " ramp min %5" PRIu64 " grew %4.1fs (steady %4.1fs) hitches %zu (steady %zu)\n",
+            name.c_str(), varying.switches, varying.learned + pad, varying.rampMinimum + pad,
+            varying.grownSeconds, steady.grownSeconds, varying.hitches, steady.hitches);
+        check(varying.switches == 0, name, "rate variation inside 90-116 FPS never switches layers",
+            "%" PRIu64 " layer switches during the ramp and wander", varying.switches);
+        check(varying.rampMinimum + 250 >= varying.learned, name, "ordinary rate variation keeps the layer's protection",
+            "fell to %" PRIu64 " us from %" PRIu64 " us during a 116 -> 90 -> 116 FPS ramp",
+            varying.rampMinimum, varying.learned);
+        check(steady.grownSeconds >= 0 && varying.grownSeconds >= 0 && varying.grownSeconds <= growBound, name,
+            "a larger need during rate variation scales protection like a steady rate",
+            "reached %" PRIu64 " us after %.1f s while varying; %.1f s at a steady rate (bound %.1f s)",
+            varying.need - 250, varying.grownSeconds, steady.grownSeconds, growBound);
+        check(varying.hitches <= hitchBound, name, "rate variation covers the disturbance like a steady rate",
+            "%zu hitches in the last 10 s while varying, %zu at a steady rate", varying.hitches, steady.hitches);
+        // Three long intervals at 116 FPS look like a brief 76 FPS layer. The
+        // detector may switch, but the excursion must cost no protection.
+        Stream excursion(session, 1000);
+        Rng excursionRng(131 + uint64_t(preset.mode));
+        for (size_t i = 0; i < frames116(20); ++i)
+            excursion.step(k116Ticks, {excursionRng.below(400) + (i % 20 == 10 ? 3000 : 0)});
+        const uint64_t excursionLearned = excursion.frames().back().appliedUs;
+        const size_t excursionBegin = excursion.size();
+        for (int stall = 0; stall < 6; ++stall) {
+            for (uint32_t tail : {1138u, 1198u, 1224u}) excursion.step(tail, {excursionRng.below(400)});
+            for (size_t i = 0; i < frames116(5); ++i)
+                excursion.step(k116Ticks, {excursionRng.below(400) + (excursion.size() % 20 == 10 ? 3000 : 0)});
+        }
+        const auto& e = excursion.frames();
+        const uint64_t excursionMinimum = minimum(e, excursionBegin, e.size(), applied);
+        uint64_t largestRise = 0;
+        for (size_t i = excursionBegin + 1; i < e.size(); ++i)
+            if (e[i].appliedUs > e[i - 1].appliedUs) largestRise = std::max(largestRise, e[i].appliedUs - e[i - 1].appliedUs);
+        report("%-52s stall excursions: min %5" PRIu64 " of %5" PRIu64 ", largest restore step %4" PRIu64 "\n",
+            name.c_str(), excursionMinimum + pad, excursionLearned + pad, largestRise);
+        check(excursionMinimum + 250 >= excursionLearned, name, "a three-frame stall excursion costs no protection",
+            "fell to %" PRIu64 " us from %" PRIu64 " us around a brief long-interval run", excursionMinimum, excursionLearned);
+        check(largestRise <= excursion.toleranceUs(), name, "returning from a stall excursion needs no visible restore step",
+            "buffer jumped %" PRIu64 " us in one frame", largestRise);
+    }
+}
+
 // 6. An abrupt rate drop that moves the source mapping later must not leave
 // the old protection standing on top of it. 116 FPS with one frame in ten
 // arriving E early holds the mapping minimum on the early frames, so the
@@ -684,7 +814,7 @@ void testLossAndDownstreamWorkBuyNoInputDelay()
             Rng rng(79 + uint64_t(preset.mode));
             for (size_t i = 0; i < total; ++i) {
                 Input input{rng.below(400)};
-                input.decoderQueueUs = i % 20 == 10 ? 3000 : 0;
+                input.decoderQueueUs += i % 20 == 10 ? 3000 : 0;
                 s.step(k116Ticks, input);
             }
             const auto in = s.input();
@@ -715,7 +845,12 @@ void testCatchUpCarryDrainsBetweenLateFrames()
         const size_t total = frames116(60);
         for (size_t i = 0; i < total; ++i) {
             Input input{rng.below(300) + (i % spacing == spacing / 2 ? 6000 : 0)};
-            input.presentLatencyUs = 280;
+            // Latching presenters: the constant 0.28 ms wake-up overshoot that
+            // exposed 3c32553e. A presenter that cannot latch has only 188 us
+            // of slack at 116/120 FPS, so it gets the residual measured after
+            // the worker's wake compensation instead (2026-10-19 capture:
+            // p10 12, p50 62, p90 86, p99 185 us after the target).
+            input.presentLatencyUs = t_CanLatch ? 280 : 12 + rng.below(100) + (rng.below(100) == 0 ? 120 : 0);
             s.step(k116Ticks, input);
         }
         const auto& f = s.frames();
@@ -725,8 +860,12 @@ void testCatchUpCarryDrainsBetweenLateFrames()
             carry.push_back(f[i].carryUs);
             recovery.push_back(f[i].recoveryUs);
             if ((i + spacing / 2) % spacing >= spacing * 9 / 10) {
+                // A latching presenter returns exactly to plan. Without latch
+                // the residual's own tail can leave a sub-tolerance carry; the
+                // 3c32553e defect left 4 ms on every frame.
+                const uint64_t allowed = t_CanLatch ? 0 : 250;
                 ++tail;
-                tailPushed += f[i].carryUs != 0 || f[i].recoveryUs != 0;
+                tailPushed += f[i].carryUs > allowed || f[i].recoveryUs > allowed;
             }
         }
         const uint64_t carryLimit = s.controller().catchupCarryLimitUs();
@@ -805,15 +944,18 @@ void testSmoothingStaysInsideItsBudget()
         const uint64_t tolerance = uint64_t(vrrProductionSession(1, rate, 120).timingOptions.toleranceUs);
         for (int mode = 0; mode < 3; ++mode) {
             const auto& smoothing = kSmoothing[mode];
-            const std::string name = std::string("smoothing-budget/balanced/") + smoothing.name + "/" + std::to_string(rate) + "fps";
+            const std::string name = label("smoothing-budget", kPresets[1], smoothing) + "/" + std::to_string(rate) + "fps";
             const Run& r = runs[mode];
             const uint64_t budget = !smoothing.smooth ? 0 : smoothing.absorb ? 2 * tolerance : tolerance;
             report("%-52s buffer %5" PRIu64 " extra p50 %4" PRIu64 " (budget %4" PRIu64 ") latency %5" PRIu64 " (off %5" PRIu64 ") jerk p95 %4" PRIu64 " (off %4" PRIu64 ")\n",
                 name.c_str(), r.peakApplied, r.extraP50, budget, r.latency, runs[0].latency, r.jerkP95, runs[0].jerkP95);
             check(r.peakApplied <= r.floor + 250, name, "smoothing never buys input buffer",
                 "input buffer peaked at %" PRIu64 " us (floor %" PRIu64 ")", r.peakApplied, r.floor);
-            check(r.extraP50 <= budget + 50, name, "typical retiming stays inside the smoothing budget",
-                "planned extra delay p50 %" PRIu64 " us, budget %" PRIu64 " us", r.extraP50, budget);
+            // Mandatory display-floor phase (a presenter that cannot latch at
+            // 116/120 FPS) is not smoothing's to spend; charge only what it adds.
+            check(r.extraP50 <= runs[0].extraP50 + budget + 50, name, "typical retiming stays inside the smoothing budget",
+                "planned extra delay p50 %" PRIu64 " us vs %" PRIu64 " us with smoothing off, budget %" PRIu64 " us",
+                r.extraP50, runs[0].extraP50, budget);
             check(r.latency <= runs[0].latency + budget + 250, name, "smoothing adds no standing delay beyond its budget",
                 "mean latency %" PRIu64 " us vs %" PRIu64 " us with smoothing off", r.latency, runs[0].latency);
             // Pass-through measures 1.0x; Reduce judder currently about 0.69x.
@@ -835,6 +977,7 @@ int main(int argc, char** argv)
         {"earn-protection", testGenuineLateInputEarnsProtection},
         {"plateau-history", testPlateauFollowsSelectedHistory},
         {"rate-round-trip", testRateRoundTripRestoresProtection},
+        {"ordinary-variation", testOrdinaryVariationKeepsOneLayer},
         {"rate-drop", testRateDropReleasesMappingExcess},
         {"clock-drift", testClockDriftNeitherRatchetsNorErodes},
         {"loss-and-downstream", testLossAndDownstreamWorkBuyNoInputDelay},
@@ -851,16 +994,17 @@ int main(int argc, char** argv)
     // Every scenario owns its controllers, so they run concurrently. Output
     // stays in scenario order.
     std::vector<std::pair<const char*, std::future<Log>>> running;
-    for (const auto& scenario : scenarios) {
+    for (bool canLatch : {true, false}) for (const auto& scenario : scenarios) {
         bool selected = selection.empty();
         for (const char* name : selection) selected |= std::strcmp(name, scenario.name) == 0;
         if (!selected) continue;
-        running.emplace_back(scenario.name, std::async(std::launch::async, [run = scenario.run, name = scenario.name] {
+        running.emplace_back(scenario.name, std::async(std::launch::async, [run = scenario.run, name = scenario.name, canLatch] {
             Log log;
             t_Log = &log;
+            t_CanLatch = canLatch;
             const auto started = std::chrono::steady_clock::now();
             run();
-            report("-- %s: %.2f s\n", name,
+            report("-- %s: %.2f s\n", scenarioName(name).c_str(),
                 std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count());
             t_Log = nullptr;
             return log;

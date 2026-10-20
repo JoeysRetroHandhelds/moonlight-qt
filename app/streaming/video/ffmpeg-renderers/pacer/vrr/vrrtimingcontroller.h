@@ -917,6 +917,10 @@ private:
     Vrr13::InputCoverageHistory m_InputCoverageHistory;
     InputLayerChange updateInputLayer(uint64_t nowUs, const CadenceObservation& cadence);
     uint64_t inputHitchPolicy(uint64_t nowUs) const;
+    // Reassembly-to-decode queue time excluded from input readiness as client
+    // backlog. Policy 11 keeps the recent typical handoff in readiness.
+    uint64_t inputDecoderBacklogUs(const PacedFrame& frame);
+    std::deque<uint64_t> m_DecoderQueueHistory;
     // Exact GPU decode durations (decoder output -> completion) from frames
     // the worker blocked on; their median estimates unobserved completions.
     std::array<uint64_t, 64> m_DecodeGpuSamples {};

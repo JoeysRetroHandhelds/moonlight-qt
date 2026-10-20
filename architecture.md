@@ -1,3 +1,35 @@
+Rate-drop layer drain (2026-10-19, input policy 11): new adaptive sessions
+select input-hitch policy 11. It is policy 10 plus policy 9's drain of a
+smaller layer by at most T per fresh source frame, instead of the ordinary
+release law. Fresh-layer reacquisition applies to policies 10 and 11 alike;
+policy 9's T-capped rise/fall, zero recovery credit, release probes and
+rate-drop settling stay policy-9-only. Under policy 10 an abrupt rate drop that
+moves the source mapping later kept the old protection on top of it: with 116
+FPS where one frame in ten arrives early, then 30 FPS without early frames,
+decode-to-present averaged 4.2 ms (Balanced) and 5.8 ms (Smooth) over the next
+15 s against 1.2 ms settled, clearing in 25--30 s (the f96b0524 symptom).
+Policy 11 averages 1.19 and 1.14 ms on the same input; a layer change still
+removes at most T in one frame. Layer selection is unchanged: confirmed layers
+at least 30 FPS apart, so a 116 -> 90 -> 116 FPS ramp, random 90--116 FPS
+dwell and the long tails that once switched a 91 FPS layer cause no switch,
+and the faster drain cannot fire inside one operating band. A three-frame
+stall excursion at 116 FPS costs no protection.
+
+Policy 11 also keeps the steady reassembly-to-decode handoff in input
+readiness. The newest capture (2026-10-19 23:11, SHA-256 `7CC78F72...291C`,
+22528 frames at 120 FPS) spends 75--207 us there on every frame (p10--p99,
+median 97 us; 0.16% over 250 us). Earlier policies subtracted all of it as
+client backlog, but the source mapping anchors on decode completion and
+includes it, so every requirement read about 0.1 ms low and protection fell
+short by the same amount. Only queue time above the median of the last 64
+frames now counts as backlog; decoder-backlog spikes still buy no buffer.
+
+Recorded policy 10 replays unchanged; replay configs accept 0--11. Calibration
+identity includes the policy number, so the first policy-11 session for a key
+starts from the cold delay. These are controller-model results from
+`tst_vrrbufferregressions` plus one capture's decoder-queue distribution, not a
+live A/B.
+
 Immediate bounded smoothing (2026-10-19, source baseline `3ae5f3b0`):
 new ordinary Reduce judder sessions select cadence revision 9. It retains
 revision 4's source-gap dead zone and total [-T,+T] phase bound, but applies
@@ -353,17 +385,13 @@ recovery retain their movement budget, but input adaptation no longer spends
 that budget or accumulates debt that freezes extra-delay recovery. The fixed
 2T Absorb pad and physical readiness/ownership floors remain in force.
 
-Known discrepancy (2026-10-19, `tst_vrrbufferregressions` rate-drop): because
-a smaller layer drains at the normal release law, an abrupt rate drop that also
+Superseded by policy 11 (2026-10-19, see the note at the top): because a
+smaller layer drains at the normal release law, an abrupt rate drop that also
 moves the source mapping later keeps the old protection on top of the moved
-mapping. With 116 FPS where one frame in ten arrives early, then 30 FPS without
-early frames, decode-to-present in the controller model averages 4.2 ms
-(Balanced) and 5.8 ms (Smooth) over the 15 s after the drop. A session that was
-always at 30 FPS settles at 1.2 ms, and the excess takes about 25--30 s to
-clear. That is the f96b0524 symptom. On the same input, revisions 6/8 with the
-rate-drop snap and revision 9's T-per-frame drain clear it within about 3 s.
-The gate records it as an open known regression. This is a model result, not a
-live capture.
+mapping, reproducing the f96b0524 symptom for 25--30 s. Revisions 6/8 with the
+rate-drop snap, revision 9's T-per-frame drain and policy 11 clear it within
+about 3 s on the same input. Recorded policy 10 retains the release-law drain
+for exact replay.
 
 The normal overlay and timing graph report recent eligible coverage over 10 s.
 The normal overlay also shows the full selected history (Balanced: 120 s),
@@ -371,12 +399,12 @@ which remains the controller's learning history. Both reporting windows count
 actual matched eligible outcomes, survive rate changes and expire individually;
 invalid input never counts as clean, and an empty window reports N/A. This
 changes reporting responsiveness without redefining the selected target or
-resetting history at layer changes. Historical policies 0--9 remain explicit
-for replay, and cache identity includes policy 10.
+resetting history at layer changes. Historical policies 0--10 remain explicit
+for replay, and cache identity includes the policy number.
 
 Nightly VRR integration (2026-10-17, master baseline `f0507ea5`):
 that baseline selected input-hitch policy 9 and Absorb smoothing revision 7.
-Current sessions select input policy 10 and smoothing revisions 8/9 as described
+Current sessions select input policy 11 and smoothing revisions 8/9 as described
 above; the shared actuator details in this historical section apply to revision 7.
 
 Policy 9 caps ordinary input-buffer growth and release at the selected interval
@@ -6073,7 +6101,7 @@ Consult the test names and assertions for the specific behavior being changed;
 the existence of a broad suite is not proof that a native API argument is tested.
 
 [tst_vrrbufferregressions.cpp](tests/vrr/tst_vrrbufferregressions.cpp) is the
-fast (about 4 s) adaptive-buffer regression gate. It builds every controller
+fast (about 7 s) adaptive-buffer regression gate. It builds every controller
 through [vrrproductionsession.h](tests/vrr/vrrproductionsession.h), which
 mirrors the worker's session resolution; `tst_vrrpacingworker` compares every
 resolved timing parameter with the worker's own, so the two cannot drift. No
