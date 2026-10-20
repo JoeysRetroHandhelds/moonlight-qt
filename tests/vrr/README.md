@@ -24,7 +24,7 @@ Historical revision-2 finite-trial tests remain unchanged.
 ## Adaptive buffer regression gate
 
 `tst_vrrbufferregressions` is the fast check to run after any change to the
-input buffer, its rate layers, catch-up or smoothing. It takes about 12 s (its
+input buffer, its rate layers, catch-up, smoothing or ceiling replacement. It takes about 9 s (its
 scenarios run in parallel) and covers every preset (Low Latency, Balanced,
 Smooth) with smoothing off, Reduce judder (the default) and Absorb, each for a
 presenter that can latch (Windows D3D11) and one that cannot (Linux Vulkan
@@ -66,7 +66,10 @@ The gate avoids both problems:
 | `plateau-history` | protection holds while its evidence is inside the history, releases once it expires, does not oscillate | 2ccca878, 0d2f9adc, 7d1148f9 |
 | `rate-round-trip` | a slower rate adds no delay, layer steps stay within T, a returning rate restores protection at once and keeps its evidence for the rest of its history | 5b062c4b, 1a5bef09, 181415ec |
 | `ordinary-variation` | a 116 -> 90 -> 116 FPS ramp and random 90-116 FPS dwell (with the long tails that once switched a 91 FPS layer) never switch layers, keep protection, and scale with a larger need like a steady rate; three-frame stall excursions cost no protection | 1a5bef09 false mid-band switches holding the buffer flat |
-| `display-ceiling` | at exactly 120 FPS on 120 Hz, planned and on-screen retiming stay inside budget plus T, a released starting delay reaches the screen, late frames leave no standing phase, and replacements stay occasional | 2026-10-20 capture: 5 ms of retiming for minutes on DXGI |
+| `display-ceiling` | at exactly 120 FPS on 120 Hz, a released starting delay reaches the screen, retiming and latency stay inside the budget or the phase late frames forced (at most a refresh), and late frames under a refresh cost no replacement | 2026-10-20 capture: 5 ms of retiming for minutes on DXGI; ceiling policy 1's skip per late frame |
+| `versus-fixed-refresh` | at the ceiling, no more visible events than the fixed-refresh pacer model (mean over 16 vsync phases), less latency, no larger disturbance, no freeze longer than its worst hold plus a refresh, and replacement requests without a ready successor stay rare; late frames of 4, 8 and 10 ms and 2% of frames 2 ms late | ceiling policy 1: 12 skips a minute where fixed refresh shows none |
+| `versus-fixed-refresh-stall` | the same against 25 ms stalls and 20 ms latency steps (plain and opening with a bunched pair); a latency step stalls for at most the step plus a refresh | burst shedding that would discard every frame of a latency step |
+| `versus-fixed-refresh-captures` | on recorded arrival timelines from two 2026-10-20 captures (`capturespans.h`), no more visible stutter than fixed refresh at 120 FPS intervals, and no more stutter or replacements than ceiling policy 1 | policy 1's 31 events where fixed refresh shows 6; shedding without the 32-frame rate limit (49 replacements in the lossy span); dropping the decode guard |
 | `rate-drop` | a rate drop that moves the mapping gives the excess back promptly | f96b0524 |
 | `clock-drift` | +/-50 ppm drift neither ratchets nor erodes retained protection | 409a5661 |
 | `loss-and-downstream` | lost-packet frames, slow preparation and client decoder backlog above the typical handoff buy no input buffer | 39d10abf, post-input work, own backlog |
@@ -82,10 +85,17 @@ entry is deleted, so a fix hardens the contract instead of leaving it advisory.
 The first entry, `rate-drop`, found that input policy 10 drained layer
 decreases at the normal release law, bringing back f96b0524's excess latency
 after an abrupt rate drop; policy 11 fixed it and the entry was deleted. The
-open entry is `display-ceiling@no-latch`: a presenter that cannot latch cannot
-show every frame at exactly its maximum refresh, and the resulting service
-overload blocks input evidence so the starting delay never releases (see
-architecture.md, "Display-ceiling phase replacement").
+open entries share one cause: a presenter that cannot latch cannot show every
+frame at exactly its maximum refresh. In `display-ceiling@no-latch` the
+resulting service overload blocks input evidence, so the starting delay never
+releases. In `versus-fixed-refresh@no-latch` and its `-stall` and `-captures`
+variants the presenter replaces about one frame in 48, where fixed refresh's
+FIFO vsync shows almost none (see architecture.md, "Display-ceiling policy
+2"). One more entry is not about ceiling replacement:
+`versus-fixed-refresh-captures/0420-lossy`. In that lossy recorded span,
+fixed refresh's deeper queue shows 28 visible events against Balanced's 54
+(policy 1: 56), because the adaptive buffer does not rise fast enough for
+chaos.
 
 The simulation follows the worker's call order with deterministic input. Every
 frame carries the 0.1 ms reassembly-to-decode handoff measured in real
@@ -93,8 +103,12 @@ captures. A latched present reaches the screen no sooner than one refresh after
 the previous flip, as the controller's spacing anchor models, and latency and
 hitches are scored from that time: scoring present calls hid the 2026-10-20
 plateau because a budget-capped plan looked healthy. A recommended replacement
-discards the frame for its successor exactly as the worker does. It measures
-controller decisions, not driver scheduling or optical scanout.
+discards the frame for its successor exactly as the worker does: within the
+decision's wait (two source periods, or a quarter refresh for a late frame,
+rounded up to whole milliseconds), with the successor as late as the input says.
+A request that finds no successor holds the frame for the whole wait. The
+fixed-refresh model follows `Pacer::handleVsync` on the same arrivals. It
+measures controller decisions, not driver scheduling or optical scanout.
 
 ## Trace questions and their regression contracts
 

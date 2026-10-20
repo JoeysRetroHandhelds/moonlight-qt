@@ -44,6 +44,7 @@ unix:!macx {
 # Every header-only buffer stage, so an edit to any of them rebuilds the gate.
 HEADERS += \
     $$PWD/vrrproductionsession.h \
+    $$PWD/capturespans.h \
     $$PWD/../../app/streaming/video/ffmpeg-renderers/pacer/vrr/cadencedetection.h \
     $$PWD/../../app/streaming/video/ffmpeg-renderers/pacer/vrr/presentationtiming.h \
     $$PWD/../../app/streaming/video/ffmpeg-renderers/pacer/vrr/prediction.h \

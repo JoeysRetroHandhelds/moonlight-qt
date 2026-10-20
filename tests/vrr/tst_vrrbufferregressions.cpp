@@ -19,6 +19,7 @@
 // Run with scenario names to select a subset, e.g.
 //   tst_vrrbufferregressions start-release rate-round-trip
 
+#include "capturespans.h"
 #include "vrrproductionsession.h"
 
 #include <algorithm>
@@ -94,13 +95,32 @@ struct KnownRegression {
 };
 std::vector<KnownRegression> g_Known = {
     {"display-ceiling@no-latch/",
-     {"a released starting delay actually lowers latency at the ceiling", "late frames leave no standing phase at the ceiling",
+     {"a released starting delay actually lowers latency at the ceiling",
+      "late frames leave no more standing phase than they forced at the ceiling",
       "planned retiming at the display ceiling stays inside its budget",
       "on-screen retiming at the display ceiling stays inside its budget"},
      "A presenter that cannot latch must stay a guard above its previous present, so at exactly its maximum refresh "
      "every frame is pushed later and the interval buffer reports service overload. That blocks all input evidence "
      "(0 eligible observations), so the starting delay never releases (+6.9 ms Balanced), and phase sawtooths between "
      "replacements (retiming p50 1.8-2.8 ms). Latching presenters (Windows D3D11) are unaffected.", 0, 0},
+    {"versus-fixed-refresh@no-latch/",
+     {"no more visible stutter than fixed refresh at the display ceiling", nullptr},
+     "Same cause as display-ceiling@no-latch: a guard above every previous present means the presenter cannot show "
+     "every frame at exactly its maximum refresh, so it replaces one about every 48 frames (about 150 skips a minute, "
+     "where fixed refresh's FIFO vsync shows 0-14). Ceiling policy 2 trims policy 1's count by a fifth; curing it needs "
+     "a latched or vsync-locked present at the ceiling. Latching presenters (Windows D3D11) are unaffected.", 0, 0},
+    {"versus-fixed-refresh-stall@no-latch/",
+     {"no more visible stutter than fixed refresh at the display ceiling", nullptr},
+     "As versus-fixed-refresh@no-latch: the guard, not the stalls, sets the replacement rate.", 0, 0},
+    {"versus-fixed-refresh-captures@no-latch/",
+     {"no more visible stutter than fixed refresh on a recorded capture span",
+      "no more stutter or replacements than ceiling policy 1 on a recorded capture span", nullptr},
+     "As versus-fixed-refresh@no-latch, on recorded arrivals: the guard spacing replaces frames at the ceiling.", 0, 0},
+    {"versus-fixed-refresh-captures/0420-lossy",
+     {"no more visible stutter than fixed refresh on a recorded capture span", nullptr},
+     "In the lossy 04:20 span (61-364 lost packets per frame, 20-46 ms late) Balanced shows about 54 visible events "
+     "where fixed refresh's deeper queue shows 28, at 5.5 ms more latency. Ceiling policy 1 shows 56: the adaptive "
+     "buffer's rise, not ceiling replacement, decides that trade, and it does not rise fast enough for chaos.", 0, 0},
 };
 
 KnownRegression* knownRegression(const std::string& scenario, const char* contract)
@@ -201,6 +221,9 @@ struct Input {
     // frame over in about 0.1 ms (2026-10-19 capture: p10 75, p50 97, p99
     // 207 us); larger waits are client decoder backlog.
     uint64_t decoderQueueUs = 100;
+    // The next frame's lateness, which decides whether a replacement finds a
+    // ready successor. Late input that persists (a latency step) sets it.
+    uint64_t successorLatenessUs = 0;
 };
 
 // One production controller driven through the worker's per-frame calls.
@@ -240,13 +263,16 @@ public:
         f.extraUs = d.plannedExtraDelayUs();
         f.originalUs = d.originalTargetUs;
         f.smoothingUs = d.cadenceSmoothingUs;
+        uint64_t startUs = now;
         if (d.trajectory.resyncRecommended) {
-            // The worker waits at most two source periods (20 ms cap) for a
-            // proven-ready successor, then discards this frame for it. Steady
-            // input decodes the successor one period later.
-            const uint64_t waitUs = std::min<uint64_t>(20000, 2 * d.sourcePeriodUs);
+            // The worker waits at most two source periods (20 ms cap), or the
+            // decision's shorter wait, in whole milliseconds, for a proven-ready
+            // successor, then discards this frame for it. Steady input decodes
+            // the successor one period later.
+            const uint64_t waitUs = (((d.replacementWaitUs ? d.replacementWaitUs :
+                std::min<uint64_t>(20000, 2 * d.sourcePeriodUs)) + 999) / 1000) * 1000;
             const uint64_t successorUs = f.sourceUs + d.sourcePeriodUs + kBaseLatencyUs +
-                input.decoderQueueUs + 400;
+                input.decoderQueueUs + input.successorLatenessUs + 400;
             if (successorUs <= now + waitUs) {
                 m_Controller.noteTrajectoryResyncDrop();
                 m_Controller.noteSubmission(false, false, 0);
@@ -255,9 +281,12 @@ public:
                 m_Frames.push_back(f);
                 return m_Frames.back();
             }
+            // Without one, the frame goes out only after the whole wait.
+            startUs = now + waitUs;
+            ++m_Deferrals;
             m_Controller.noteTrajectoryDeferred();
         }
-        const uint64_t ready = std::max(now, d.renderStartUs) + input.prepareUs;
+        const uint64_t ready = std::max(startUs, d.renderStartUs) + input.prepareUs;
         f.submittedUs = std::max(ready, d.targetUs) + input.presentLatencyUs;
         f.shownUs = d.latchedPresentation && m_LastShownUs ?
             std::max(f.submittedUs, m_LastShownUs + m_Controller.displayPeriodUs()) : f.submittedUs;
@@ -270,8 +299,10 @@ public:
         return m_Frames.back();
     }
 
-    // Frames discarded for a ready successor at the display ceiling.
+    // Frames discarded for a ready successor at the display ceiling, and
+    // replacement requests that found none and cost the worker its wait.
     size_t replacements() const { return m_Replacements; }
+    size_t deferrals() const { return m_Deferrals; }
 
     void rebase() { m_Controller.rebase(); }
     const std::vector<Frame>& frames() const { return m_Frames; }
@@ -296,7 +327,7 @@ private:
     int64_t m_DriftPpm = 0;
     uint64_t m_Ticks = 0, m_LastSubmittedUs = 0, m_LastShownUs = 0;
     int m_FrameNumber = 0;
-    size_t m_Replacements = 0;
+    size_t m_Replacements = 0, m_Deferrals = 0;
     std::vector<Frame> m_Frames;
 };
 
@@ -744,9 +775,13 @@ void testOrdinaryVariationKeepsOneLayer()
 // 5c. At the display ceiling no presenter can repay phase by showing frames
 // faster: released input buffer and late-frame carry become standing ownership
 // phase, reported as Retiming budget, unless one frame is replaced by a ready
-// successor. Regression: the 2026-10-20 03:58 capture (120 FPS on 120 Hz, DXGI,
-// Absorb) held about 5 ms of retiming for minutes after its buffer released;
-// the replacement existed only for native scheduled presentation.
+// successor. A release must be shed: the buffer said that protection is
+// excess. Phase a late frame forced is kept instead, up to a refresh, as fixed
+// refresh keeps its queued frame (versus-fixed-refresh). Regressions: the
+// 2026-10-20 03:58 capture (120 FPS on 120 Hz, DXGI, Absorb) held about 5 ms of
+// retiming for minutes after its buffer released, the replacement existing
+// only for native scheduled presentation; ceiling policy 1 then replaced a
+// frame after every late frame.
 void testDisplayCeilingShedsStandingPhase()
 {
     for (const auto& preset : kPresets) for (const auto& smoothing : kSmoothing) {
@@ -755,12 +790,13 @@ void testDisplayCeilingShedsStandingPhase()
         const uint64_t tolerance = uint64_t(session.timingOptions.toleranceUs);
         const uint64_t budget = !smoothing.smooth ? 0 : smoothing.absorb ? 2 * tolerance : tolerance;
         const size_t total = 60 * 120, settledFrom = 40 * 120;
+        constexpr uint64_t kLateUs = 4000, kJitterUs = 400, kRefreshUs = 8333;
         // One late frame every 5 s adds carry that running faster cannot repay.
         const auto run = [&](uint64_t seedUs) {
             auto stream = std::make_unique<Stream>(session, seedUs);
             Rng rng(137 + uint64_t(preset.mode));
             for (size_t i = 0; i < total; ++i)
-                stream->step(750, {rng.below(400) + (i % 600 == 300 ? 4000 : 0)});
+                stream->step(750, {rng.below(kJitterUs) + (i % 600 == 300 ? kLateUs : 0)});
             return stream;
         };
         // Cold start releases the starting delay at the ceiling; the reference
@@ -780,29 +816,359 @@ void testDisplayCeilingShedsStandingPhase()
         // latency differs from it only by retiming and readiness.
         const uint64_t floorBuffer = floor->frames().back().appliedUs;
         const uint64_t start = f[0].appliedUs;
-        // Each replacement sheds up to one period: the starting delay, plus at
-        // most one per late frame, plus slack. A presenter that cannot latch
-        // must stay a guard above the previous present, so at exactly its
-        // maximum refresh it cannot show every frame; bound it to 4 per second.
-        const size_t allowed = t_CanLatch ? size_t((start + 8332) / 8333) + total / 600 + 3 : total / 30;
-        report("%-52s start %5" PRIu64 " retiming p50 planned %4" PRIu64 " shown %4" PRIu64 " (budget %4" PRIu64 ") latency %5" PRIu64 " (floor start %5" PRIu64 ") replacements %zu (allowed %zu)\n",
-            name.c_str(), start, plannedP50, shownP50, budget, coldLatency, floorLatency, cold->replacements(), allowed);
-        check(plannedP50 <= budget + tolerance + 50, name, "planned retiming at the display ceiling stays inside its budget",
-            "planned retiming p50 %" PRIu64 " us over the last 20 s; budget %" PRIu64 " us plus T %" PRIu64 " us",
-            plannedP50, budget, tolerance);
-        check(shownP50 <= budget + tolerance + 50, name, "on-screen retiming at the display ceiling stays inside its budget",
-            "frames reached the screen %" PRIu64 " us (p50) after their smoothed slot; budget %" PRIu64 " us plus T %" PRIu64 " us",
-            shownP50, budget, tolerance);
+        // The most a late frame overran its protection, plus the 0.5 ms
+        // handoff and preparation it reaches the screen with; never more than
+        // a refresh is kept.
+        const uint64_t forced = std::min(kRefreshUs,
+            kLateUs + kJitterUs + 500 - std::min(kLateUs + kJitterUs + 500, floorBuffer));
+        const uint64_t kept = std::max(budget, forced);
+        // Each replacement sheds up to one period: the starting delay, in up to
+        // two steps while the release is still converging. Late frames under
+        // a refresh cost none. A presenter that cannot latch must stay a guard
+        // above the previous present, so at exactly its maximum refresh it
+        // cannot show every frame; bound it to 4 per second.
+        const size_t allowed = t_CanLatch ? size_t((start + kRefreshUs - 1) / kRefreshUs) + 2 : total / 30;
+        report("%-52s start %5" PRIu64 " retiming p50 planned %4" PRIu64 " shown %4" PRIu64 " (kept %4" PRIu64 ") latency %5" PRIu64 " (floor start %5" PRIu64 ") replacements %zu (allowed %zu)\n",
+            name.c_str(), start, plannedP50, shownP50, kept, coldLatency, floorLatency, cold->replacements(), allowed);
+        check(plannedP50 <= kept + tolerance + 50, name, "planned retiming at the display ceiling stays inside its budget",
+            "planned retiming p50 %" PRIu64 " us over the last 20 s; budget %" PRIu64 " us, late-frame phase %" PRIu64
+            " us, plus T %" PRIu64 " us", plannedP50, budget, forced, tolerance);
+        check(shownP50 <= kept + tolerance + 50, name, "on-screen retiming at the display ceiling stays inside its budget",
+            "frames reached the screen %" PRIu64 " us (p50) after their smoothed slot; budget %" PRIu64
+            " us, late-frame phase %" PRIu64 " us, plus T %" PRIu64 " us", shownP50, budget, forced, tolerance);
         check(coldLatency <= floorLatency + tolerance, name, "a released starting delay actually lowers latency at the ceiling",
             "latency %" PRIu64 " us after releasing the cold start, %" PRIu64 " us when started at the floor",
             coldLatency, floorLatency);
-        check(floorLatency <= kBaseLatencyUs + 100 + floorBuffer + budget + tolerance + 1000, name,
-            "late frames leave no standing phase at the ceiling",
-            "latency %" PRIu64 " us from a floor start with a %" PRIu64 " us buffer and %" PRIu64 " us budget",
-            floorLatency, floorBuffer, budget);
-        check(cold->replacements() <= allowed, name, "replacement sheds standing phase without dropping steadily",
-            "%zu replacements in 60 s; allowed %zu", cold->replacements(), allowed);
+        check(floorLatency <= kBaseLatencyUs + 100 + floorBuffer + kept + tolerance + 1000, name,
+            "late frames leave no more standing phase than they forced at the ceiling",
+            "latency %" PRIu64 " us from a floor start with a %" PRIu64 " us buffer, %" PRIu64 " us budget and %" PRIu64
+            " us late-frame phase", floorLatency, floorBuffer, budget, forced);
+        check(cold->replacements() <= allowed, name, "late frames under a refresh cost no replacement at the ceiling",
+            "%zu replacements in 60 s; allowed %zu for the starting delay", cold->replacements(), allowed);
     }
+}
+
+// Moonlight's fixed-refresh V-Sync pacer (Pacer::handleVsync) on the same
+// input: the baseline the ceiling policy has to beat. Vsync ticks at phase +
+// k * D. Each tick drops queued frames beyond its target (one, or three while
+// any of the last 500 ms of queue samples held at most one frame), then takes
+// the oldest queued frame or waits up to 1000/Hz - 3 ms for one to arrive.
+// The frame it takes is shown on the next vsync; the pacing queue holds three.
+std::vector<Frame> fixedRefresh(const std::vector<Frame>& input, uint64_t phaseUs, int displayHz)
+{
+    const double periodUs = 1000000.0 / displayHz;
+    const uint64_t waitUs = uint64_t(std::max(1000 / displayHz, 3) - 3) * 1000;
+    std::vector<Frame> out(input.size());
+    for (size_t i = 0; i < input.size(); ++i) {
+        out[i].sourceUs = input[i].sourceUs;
+        out[i].decodedUs = input[i].decodedUs;
+        out[i].dropped = true;
+    }
+    // Frames reach the pacing queue in decode order; a late frame holds back
+    // its successors.
+    std::vector<size_t> queue, history;
+    size_t next = 0;
+    uint64_t releasedUs = 0;
+    const auto arrival = [&](size_t i) { return std::max(input[i].decodedUs, releasedUs); };
+    const uint64_t originUs = input.front().decodedUs + phaseUs;
+    for (uint64_t tick = 0; next < input.size() || !queue.empty(); ++tick) {
+        const uint64_t vsyncUs = originUs + uint64_t(double(tick) * periodUs);
+        for (; next < input.size() && arrival(next) <= vsyncUs; ++next) {
+            releasedUs = arrival(next);
+            if (queue.size() == 3) queue.erase(queue.begin());
+            queue.push_back(next);
+        }
+        const size_t target = std::any_of(history.begin(), history.end(), [](size_t depth) { return depth <= 1; }) ? 3 : 1;
+        if (history.size() == size_t(displayHz / 2)) history.erase(history.begin());
+        history.push_back(queue.size());
+        while (queue.size() > target) queue.erase(queue.begin());
+        size_t taken = SIZE_MAX;
+        if (!queue.empty()) {
+            taken = queue.front();
+            queue.erase(queue.begin());
+        }
+        else if (next < input.size() && arrival(next) <= vsyncUs + waitUs) {
+            releasedUs = arrival(next);
+            taken = next++;
+        }
+        if (taken != SIZE_MAX) {
+            out[taken].shownUs = originUs + uint64_t(double(tick + 1) * periodUs);
+            out[taken].dropped = false;
+        }
+    }
+    return out;
+}
+
+// What a viewer can see: shown frames whose presented interval departs from
+// the source interval by more than 1 ms, or that follow a skipped frame.
+// Sub-millisecond flip-queue steps are neither a repeat nor a drop.
+struct Disturbances {
+    size_t events = 0, skips = 0;
+    // Longest wait for a new frame on screen: one disturbance can hide a freeze.
+    uint64_t worstStepUs = 0, worstGapUs = 0, meanLatencyUs = 0;
+};
+
+Disturbances disturbances(const std::vector<Frame>& f, size_t begin, size_t end)
+{
+    constexpr int64_t kVisibleStepUs = 1000;
+    Disturbances d;
+    size_t previous = SIZE_MAX, shown = 0;
+    uint64_t latencyUs = 0;
+    for (size_t i = begin; i < std::min(end, f.size()); ++i) {
+        if (f[i].dropped) continue;
+        latencyUs += latency(f[i]);
+        ++shown;
+        if (previous != SIZE_MAX) {
+            const int64_t source = int64_t(f[i].sourceUs) - int64_t(f[previous].sourceUs);
+            const int64_t presented = int64_t(f[i].shownUs) - int64_t(f[previous].shownUs);
+            const uint64_t step = uint64_t(presented > source ? presented - source : source - presented);
+            const bool skipped = i - previous > 1;
+            d.skips += skipped;
+            d.events += skipped || step > uint64_t(kVisibleStepUs);
+            d.worstStepUs = std::max(d.worstStepUs, step);
+            d.worstGapUs = std::max(d.worstGapUs, uint64_t(presented));
+        }
+        previous = i;
+    }
+    d.meanLatencyUs = shown ? latencyUs / shown : 0;
+    return d;
+}
+
+struct LateInput {
+    const char* name;
+    Input (*make)(size_t frame, Rng& rng);
+    // Lateness that persists (a latency step): it stalls any presenter by
+    // itself less its buffer, and fixed refresh hides more of it behind its
+    // extra latency, so the stall is bounded by the step instead.
+    uint64_t sustainedUs = 0;
+};
+
+// 5d. At the display ceiling VRR must show no more visible stutter than the
+// fixed-refresh pacer on the same input, and less latency. Fixed refresh
+// carries about a queued refresh of latency, so it rides out a late frame
+// under a refresh without any repeat. Regression: ceiling policy 1 shed the
+// phase every late frame forced with a skip, 12 a minute at one 4 ms late
+// frame per 5 s where fixed refresh showed none. Its vsync phase is
+// arbitrary, so it is scored as the mean over 16 phases.
+void versusFixedRefresh(const char* scenario, const std::vector<LateInput>& inputs)
+{
+    // Score the last minute: a cold start's release settles in the first,
+    // and display-ceiling bounds what that release may cost.
+    constexpr size_t kTotal = 120 * 120, kFrom = 60 * 120;
+    constexpr int kPhases = 16;
+    for (const auto& input : inputs) for (const auto& preset : kPresets) for (const auto& smoothing : kSmoothing) {
+        const std::string name = label(scenario, preset, smoothing) + "/" + input.name;
+        const auto session = vrrProductionSession(preset.mode, 120, 120, smoothing.smooth, smoothing.absorb);
+        Stream stream(session);
+        Rng rng(211 + uint64_t(preset.mode));
+        for (size_t i = 0; i < kTotal; ++i) stream.step(750, input.make(i, rng));
+        const auto vrr = disturbances(stream.frames(), kFrom, kTotal);
+        double fixedEvents = 0, fixedLatency = 0;
+        uint64_t fixedWorstStep = 0, fixedWorstGap = 0;
+        for (int phase = 0; phase < kPhases; ++phase) {
+            const auto fixed = disturbances(fixedRefresh(stream.frames(), uint64_t(phase) * 8333 / kPhases, 120), kFrom, kTotal);
+            fixedEvents += double(fixed.events) / kPhases;
+            fixedLatency += double(fixed.meanLatencyUs) / kPhases;
+            fixedWorstStep = std::max(fixedWorstStep, fixed.worstStepUs);
+            fixedWorstGap = std::max(fixedWorstGap, fixed.worstGapUs);
+        }
+        report("%-62s vrr events %3zu (skips %3zu, deferred %3zu) latency %5" PRIu64 " | fixed refresh events %5.1f latency %5.0f\n",
+            name.c_str(), vrr.events, vrr.skips, stream.deferrals(), vrr.meanLatencyUs, fixedEvents, fixedLatency);
+        // Each request that finds no successor holds the frame for the
+        // worker's whole wait; asking on every frame compounded those waits.
+        check(stream.deferrals() <= kTotal / 120, name, "replacement requests without a ready successor stay rare",
+            "%zu requests found no successor in 120 s", stream.deferrals());
+        check(double(vrr.events) <= fixedEvents, name, "no more visible stutter than fixed refresh at the display ceiling",
+            "%zu visible events (%zu skips) over 60 s; fixed refresh %.1f", vrr.events, vrr.skips, fixedEvents);
+        // Discarding every frame of a latency step is one disturbance on the
+        // event count; the screen still froze for the whole step.
+        check(vrr.worstGapUs <= fixedWorstGap + 8334, name, "no freeze longer than fixed refresh's worst hold plus a refresh",
+            "%" PRIu64 " us without a new frame; fixed refresh %" PRIu64 " us", vrr.worstGapUs, fixedWorstGap);
+        check(double(vrr.meanLatencyUs) < fixedLatency, name, "less latency than fixed refresh at the display ceiling",
+            "mean latency %" PRIu64 " us; fixed refresh %.0f us", vrr.meanLatencyUs, fixedLatency);
+        if (input.sustainedUs)
+            check(vrr.worstStepUs <= input.sustainedUs + 8333, name, "a latency step stalls for at most the step plus a refresh",
+                "worst presented step %" PRIu64 " us for a %" PRIu64 " us step; fixed refresh %" PRIu64 " us",
+                vrr.worstStepUs, input.sustainedUs, fixedWorstStep);
+        else
+            check(vrr.worstStepUs <= std::max<uint64_t>(fixedWorstStep, 8334), name,
+                "no disturbance larger than fixed refresh's at the display ceiling",
+                "worst presented step %" PRIu64 " us; fixed refresh %" PRIu64 " us", vrr.worstStepUs, fixedWorstStep);
+    }
+}
+
+void testVersusFixedRefreshLateFrames()
+{
+    versusFixedRefresh("versus-fixed-refresh", {
+        // One late frame every 5 s: under half, near and beyond a refresh.
+        {"late-4ms", [](size_t i, Rng& rng) { return Input{rng.below(400) + (i % 600 == 300 ? 4000 : 0)}; }},
+        {"late-8ms", [](size_t i, Rng& rng) { return Input{rng.below(400) + (i % 600 == 300 ? 8000 : 0)}; }},
+        {"late-10ms", [](size_t i, Rng& rng) { return Input{rng.below(400) + (i % 600 == 300 ? 10000 : 0)}; }},
+        // 2% of frames 2 ms late: above every profile's allowance.
+        {"frequent-2ms", [](size_t i, Rng& rng) { return Input{rng.below(400) + (i % 60 == 30 ? 2000 : 0)}; }},
+    });
+}
+
+void testVersusFixedRefreshStalls()
+{
+    versusFixedRefresh("versus-fixed-refresh-stall", {
+        // A 25 ms network stall every 10 s delivers three frames together.
+        {"stall-25ms", [](size_t i, Rng& rng) {
+            const size_t k = i % 1200;
+            return Input{rng.below(400) + (k == 600 ? 25000 : k == 601 ? 16700 : k == 602 ? 8300 : 0)};
+        }},
+        // Every frame 20 ms late for 2 s every 20 s: a route change, not a
+        // burst. Successors are as late, so replacing them sheds nothing.
+        {"latency-step-20ms", [](size_t i, Rng& rng) {
+            const auto inStep = [](size_t frame) { const size_t k = frame % 2400; return k >= 1200 && k < 1440; };
+            Input input{rng.below(400) + (inStep(i) ? 20000 : 0)};
+            input.successorLatenessUs = inStep(i + 1) ? 20000 : 0;
+            return input;
+        }, 20000},
+        // The same step opening with a hiccup: its first frame arrives with
+        // the second, so the first replacement finds a ready successor and
+        // every later successor is as late. Shedding must stop there.
+        {"bunched-latency-step-20ms", [](size_t i, Rng& rng) {
+            const auto lateness = [](size_t frame) -> uint64_t {
+                const size_t k = frame % 2400;
+                return k == 1200 ? 28300 : k > 1200 && k < 1440 ? 20000 : 0;
+            };
+            Input input{rng.below(400) + lateness(i)};
+            input.successorLatenessUs = lateness(i + 1);
+            return input;
+        }, 28300},
+    });
+}
+
+// The live policy on a recorded arrival timeline, through the same worker
+// model as Stream. A frame that needed no native decode wait was ready at
+// decoder output: the observed completion also holds the live session's own
+// queue residence. Source times follow the RTP clock, aligned to the first
+// receive, so VRR and fixed refresh share one latency reference.
+struct CaptureRun {
+    std::vector<Frame> frames;
+    size_t replacements = 0, deferrals = 0;
+};
+
+// ceilingPolicy 0 runs the live policy; otherwise it selects a ceiling policy.
+template<size_t N>
+CaptureRun runCapture(const CaptureArrival (&span)[N], uint64_t ceilingPolicy = 0)
+{
+    const auto session = vrrProductionSession(1, 120, 120, true, true);
+    auto parameters = vrrTimingParametersForSession(session);
+    if (ceilingPolicy) parameters.playoutCeilingPhaseReplacement = ceilingPolicy;
+    VrrTimingController controller(session, t_CanLatch, parameters);
+    const auto ready = [&](size_t i) {
+        return kOriginUs + (span[i].syncWait == 0 ? span[i].output : std::max(span[i].output, span[i].complete));
+    };
+    CaptureRun run;
+    uint64_t lastSubmittedUs = 0, lastShownUs = 0, rtpUs = 0;
+    for (size_t i = 0; i < N; ++i) {
+        const auto& a = span[i];
+        if (i) rtpUs += uint64_t(uint32_t(a.rtp - span[i - 1].rtp)) * 1000000 / 90000;
+        Frame f;
+        f.sourceUs = kOriginUs + span[0].receive + rtpUs;
+        f.decodedUs = ready(i);
+        PacedFrame frame(nullptr, int(a.frame), a.rtp, a.valid != 0, kOriginUs + a.output);
+        frame.noteGpuReadyUs(f.decodedUs);
+        frame.setDeliveryTimeline(kOriginUs + a.receive, kOriginUs + a.reassembled, kOriginUs + a.submit);
+        frame.setLostPackets(a.lost);
+        frame.noteDecodeSyncWaitUs(a.syncWait);
+        const uint64_t now = std::max(f.decodedUs, lastSubmittedUs);
+        const auto d = controller.schedule(frame, now);
+        f.originalUs = d.originalTargetUs;
+        uint64_t startUs = now;
+        if (d.trajectory.resyncRecommended) {
+            const uint64_t waitUs = (((d.replacementWaitUs ? d.replacementWaitUs :
+                std::min<uint64_t>(20000, 2 * d.sourcePeriodUs)) + 999) / 1000) * 1000;
+            if (i + 1 < N && ready(i + 1) <= now + waitUs) {
+                controller.noteTrajectoryResyncDrop();
+                controller.noteSubmission(false, false, 0);
+                f.dropped = true;
+                ++run.replacements;
+                run.frames.push_back(f);
+                continue;
+            }
+            startUs = now + waitUs;
+            ++run.deferrals;
+            controller.noteTrajectoryDeferred();
+        }
+        const uint64_t readyUs = std::max(startUs, d.renderStartUs) + 500;
+        f.submittedUs = std::max(readyUs, d.targetUs);
+        f.shownUs = d.latchedPresentation && lastShownUs ?
+            std::max(f.submittedUs, lastShownUs + controller.displayPeriodUs()) : f.submittedUs;
+        controller.notePreparationDuration(500, 0, readyUs);
+        controller.noteSchedulerDelays(0, 0, true);
+        controller.noteSubmission(true, false, f.submittedUs, f.submittedUs);
+        lastSubmittedUs = f.submittedUs;
+        lastShownUs = f.shownUs;
+        run.frames.push_back(f);
+    }
+    return run;
+}
+
+// A real game does not hold 120 FPS, and fixed refresh judders at every lower
+// rate by construction; score visible events where the source ran at the
+// ceiling for the interval (7.9-8.8 ms), and skips anywhere.
+Disturbances ceilingDisturbances(const std::vector<Frame>& f)
+{
+    Disturbances d;
+    size_t previous = SIZE_MAX, shown = 0;
+    uint64_t latencyUs = 0;
+    for (size_t i = 0; i < f.size(); ++i) {
+        if (f[i].dropped) continue;
+        latencyUs += latency(f[i]);
+        ++shown;
+        if (previous != SIZE_MAX) {
+            const bool skipped = i - previous > 1;
+            const int64_t source = int64_t(f[i].sourceUs) - int64_t(f[previous].sourceUs);
+            const int64_t presented = int64_t(f[i].shownUs) - int64_t(f[previous].shownUs);
+            const bool ceiling = !skipped && source >= 7900 && source <= 8800;
+            const uint64_t step = uint64_t(presented > source ? presented - source : source - presented);
+            d.skips += skipped;
+            d.events += skipped || (ceiling && step > 1000);
+        }
+        previous = i;
+    }
+    d.meanLatencyUs = shown ? latencyUs / shown : 0;
+    return d;
+}
+
+// 5e. The fixed-refresh comparison on recorded arrival timelines from the
+// 2026-10-20 captures (capturespans.h), and against ceiling policy 1, the policy
+// this one replaced. Regressions: policy 1 replaced 10 frames in the 03:58 span,
+// 31 visible events where fixed refresh shows 6; without the decode guard the
+// span showed 14; shedding every step past a refresh, without the 32-frame rate
+// limit, replaced 49 frames in the lossy 04:20 span (93 events where policy 1
+// shows 56).
+void testVersusFixedRefreshCaptures()
+{
+    const auto compare = [](const char* spanName, const CaptureRun& run, const CaptureRun& policy1) {
+        const std::string name = scenarioName("versus-fixed-refresh-captures") + "/" + spanName;
+        const auto vrr = ceilingDisturbances(run.frames);
+        double fixedEvents = 0, fixedLatency = 0;
+        constexpr int kPhases = 16;
+        for (int phase = 0; phase < kPhases; ++phase) {
+            const auto fixed = ceilingDisturbances(fixedRefresh(run.frames, uint64_t(phase) * 8333 / kPhases, 120));
+            fixedEvents += double(fixed.events) / kPhases;
+            fixedLatency += double(fixed.meanLatencyUs) / kPhases;
+        }
+        const auto previous = ceilingDisturbances(policy1.frames);
+        report("%-62s vrr events %3zu (skips %3zu, replaced %3zu, deferred %3zu) latency %5" PRIu64
+            " | policy 1 events %3zu (replaced %3zu) | fixed refresh events %5.1f latency %5.0f\n", name.c_str(),
+            vrr.events, vrr.skips, run.replacements, run.deferrals, vrr.meanLatencyUs, previous.events,
+            policy1.replacements, fixedEvents, fixedLatency);
+        check(vrr.events <= previous.events && run.replacements <= policy1.replacements, name,
+            "no more stutter or replacements than ceiling policy 1 on a recorded capture span",
+            "%zu visible events and %zu replacements; policy 1 %zu and %zu", vrr.events, run.replacements,
+            previous.events, policy1.replacements);
+        check(double(vrr.events) <= fixedEvents, name, "no more visible stutter than fixed refresh on a recorded capture span",
+            "%zu visible events (%zu replacements); fixed refresh %.1f", vrr.events, run.replacements, fixedEvents);
+        check(double(vrr.meanLatencyUs) < fixedLatency, name, "less latency than fixed refresh on a recorded capture span",
+            "mean latency %" PRIu64 " us; fixed refresh %.0f us", vrr.meanLatencyUs, fixedLatency);
+    };
+    compare("0358-sustained-120", runCapture(kCapture0358), runCapture(kCapture0358, 1));
+    compare("0420-lossy", runCapture(kCapture0420), runCapture(kCapture0420, 1));
 }
 
 // 6. An abrupt rate drop that moves the source mapping later must not leave
@@ -1108,6 +1474,9 @@ int main(int argc, char** argv)
         {"rate-round-trip", testRateRoundTripRestoresProtection},
         {"ordinary-variation", testOrdinaryVariationKeepsOneLayer},
         {"display-ceiling", testDisplayCeilingShedsStandingPhase},
+        {"versus-fixed-refresh", testVersusFixedRefreshLateFrames},
+        {"versus-fixed-refresh-stall", testVersusFixedRefreshStalls},
+        {"versus-fixed-refresh-captures", testVersusFixedRefreshCaptures},
         {"rate-drop", testRateDropReleasesMappingExcess},
         {"clock-drift", testClockDriftNeitherRatchetsNorErodes},
         {"loss-and-downstream", testLossAndDownstreamWorkBuyNoInputDelay},

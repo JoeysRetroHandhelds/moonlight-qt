@@ -298,8 +298,11 @@ checks. Do not assume a successful application build rebuilt the diagnostics.
 
 `tst_vrrbufferregressions` is the adaptive-buffer regression gate. It builds
 every controller exactly as a live session does and pins no policy revision,
-so run it after any buffer, rate-layer, catch-up or smoothing change, not only
-before deployment; it takes about 12 s. `KNOWN` lines are open regressions the
+so run it after any buffer, rate-layer, catch-up, smoothing or ceiling
+replacement change, not only before deployment; it takes about 9 s. Its
+`versus-fixed-refresh` scenarios fail when VRR at the display ceiling shows
+more visible stutter than the fixed-refresh pacer would on the same input.
+`KNOWN` lines are open regressions the
 shipped policy already has. They do not fail the gate. A `FAIL` line is a new
 regression, and `FIXED KNOWN REGRESSION` means its `g_Known` entry must be
 deleted. Build new controller-level tests of live behavior through

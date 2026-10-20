@@ -293,7 +293,10 @@
     X(uint64_t, native_scheduled_presentation, nativeScheduledPresentation, 0) \
     /* At the display ceiling, standing retiming beyond its budget plus T */ \
     /* requests a ready-successor replacement. 0: native scheduled smoothing */ \
-    /* revisions 8/9 only (recorded); 1: every presentation path and mode. */ \
+    /* revisions 8/9 only (recorded); 1: every presentation path and mode; */ \
+    /* 2: also keeps phase late input forced (up to a refresh) and replaces */ \
+    /* beyond a refresh at once, so late frames cost fewer skips than fixed */ \
+    /* refresh's repeats and drops. */ \
     X(uint64_t, playout_ceiling_phase_replacement, playoutCeilingPhaseReplacement, 0)
 
 // Every value that changes VRR policy remains replaceable by replay without
@@ -398,6 +401,9 @@ struct VrrTimingDecision {
     // tick. Non-zero means a fresher successor, if one is already queued,
     // should be shown instead.
     uint64_t missedTicks = 0;
+    // Longest the worker may wait for a ready successor when replacement is
+    // recommended; 0 keeps its default of two source periods (20 ms cap).
+    uint64_t replacementWaitUs = 0;
 
     uint64_t renderStartUs = 0;
     uint64_t targetUs = 0;
@@ -500,8 +506,15 @@ public:
             m_ExtraBufferSlew.shedRecovery();
             if (m_Parameters.playoutInputPercentileEnabled) m_InputPercentileBuffer.takePendingRelease();
         }
+        // The successor's phase is measured against the last shown frame; the
+        // step between them is the shed, not new input lateness.
+        m_CeilingLastPhaseValid = false;
     }
-    void noteTrajectoryDeferred() { m_PhaseTrajectory.noteDeferred(); m_FullRatePhaseCount = 0; }
+    void noteTrajectoryDeferred() {
+        m_PhaseTrajectory.noteDeferred();
+        m_FullRatePhaseCount = 0;
+        m_CeilingShedding = false;
+    }
     Vrr13::PhaseTrajectory::Stats trajectoryStats() const { return m_PhaseTrajectory.stats(); }
     void notePresentation(const Vrr13::PresentationObservation& observation);
     uint64_t nativeCadenceIntervals() const { return m_NativeCadenceIntervals; }
@@ -621,6 +634,13 @@ private:
     // Individual early stamps can legitimately need more physical spacing.
     std::array<uint64_t, 32> m_FullRatePhase {};
     size_t m_FullRatePhaseCount = 0, m_FullRatePhaseNext = 0;
+    // Ceiling policy 2: on-screen phase late input forced (at most a refresh),
+    // kept as protection instead of shed, the previous shown frame's on-screen
+    // and removable phase, and the phase of the frame the current shed replaced.
+    uint64_t m_CeilingEarnedPhaseUs = 0, m_CeilingLastPhaseUs = 0, m_CeilingLastRemovableUs = 0;
+    uint64_t m_CeilingShedFromUs = 0;
+    size_t m_CeilingFramesSinceShed = SIZE_MAX / 2;
+    bool m_CeilingLastPhaseValid = false, m_CeilingShedding = false;
     bool m_BufferLayerChanged = false, m_BufferLayerDrain = false;
     bool m_HaveMappingBasis = false;
     bool m_CorrectedMappingBasis = false;

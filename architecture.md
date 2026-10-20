@@ -1,3 +1,83 @@
+Display-ceiling policy 2 (2026-10-20, `playout_ceiling_phase_replacement=2`):
+policy 1 (below) shed the phase every late frame forced with a replacement, so
+at the ceiling each late frame cost a visible skip. The gate now models
+Moonlight's fixed-refresh pacer (`Pacer::handleVsync`: drop target 1, or 3
+while any of the last 500 ms of queue samples held at most one frame; a
+1000/Hz - 3 ms wait; a three-frame queue; shown on the next vsync), scored as
+the mean over 16 vsync phases on identical input. Fixed refresh carries about a
+queued refresh of latency (13.5-16.3 ms in the model against VRR's 2.5-11.7 ms)
+and therefore rides out a late frame under a refresh with no repeat at all.
+Policy 1 showed 12 skips a minute at one 4 ms late frame per 5 s where fixed
+refresh showed none.
+
+Policy 2 keeps on-screen phase that the frame's own late readiness forced, up
+to one refresh, as protection for the next late frame, the fixed-refresh queue
+equivalent. The 32-frame rule now sheds only removable phase, the part beyond
+each frame's own readiness, above the larger of the smoothing budget and the
+kept phase, plus T. Late input that persists (a latency step) is therefore not
+removable and costs no periodic replacement. Beyond a refresh:
+- A step past a refresh requests replacement at once. The step can be in
+  on-screen phase (a late frame or a burst) or in removable phase (late input
+  turning on time again). It needs a previous shown frame, and a new shed starts
+  at most once per 32-frame window. A lossy capture span stepped every few frames;
+  shedding each step cost 50 replacements where policy 1 took 14.
+- Shedding continues through a burst while each replacement sheds, and would
+  shed, at least half a refresh, so a latency step never discards frame after
+  frame.
+- A frame itself more than a refresh late accepts only a successor ready within
+  a quarter refresh: an on-time successor would already be decoded. Other
+  requests wait the usual two periods (`VrrTimingDecision::replacementWaitUs`).
+- Only the stepping frame asks. A request on every frame compounded the
+  worker's waits into the phase it was shedding.
+- The worker's wait for the frame's own GPU decode (`decodeSyncWaitUs`) is
+  never shed at once; decode backlog stays with the 32-frame rule.
+
+In the gate, latched VRR has no more visible events than fixed refresh for every
+synthetic input and profile, never freezes longer than fixed refresh's worst hold plus a
+refresh, and has lower latency:
+
+| Input | VRR events (60 s) | Fixed refresh events | VRR latency | Fixed refresh latency |
+| --- | --- | --- | --- | --- |
+| 4 ms late frame every 5 s | 0 | 0 | 5.7 ms | 13.5-13.7 ms |
+| 8 ms late frame every 5 s | 0 | 7.5-7.9 | 9.7 ms | 14.3-14.5 ms |
+| 10 ms late frame every 5 s | 0-12 (one merged skip each) | 13.4-13.6 | 2.5-11.7 ms | 14.5-14.7 ms |
+| 2% of frames 2 ms late | 0 | 0 | 3.9 ms | 13.5-13.7 ms |
+| 25 ms stall every 10 s | 6 | 12.4 | 2.5-3.5 ms | 14.4-14.7 ms |
+| 20 ms latency step for 2 s | 6 | 6.0-6.2 | 4.7-5.6 ms | 15.6-15.7 ms |
+| The same step opening with a bunched pair | 6 | 8.4-8.6 | 4.7-5.6 ms | 16.2-16.3 ms |
+
+Trace-driven model of the 2026-10-20 captures (exploratory: the gate's worker
+model on each capture's recorded arrival timeline, latched, without present
+feedback; a frame that needed no native decode wait counts as ready at decoder
+output; replay cannot shed frames):
+
+| Capture | Replacements (policy 1 → 2) | Visible events at 120 FPS intervals | Fixed refresh events | Mean latency, policy 2 vs fixed refresh |
+| --- | --- | --- | --- | --- |
+| 03:58 (`B1A42391...`) | 32 → 2 | 140 → 83 | 325 | 11.1 ms vs 15.0 ms |
+| 04:20 (lossy span) | 14 → 7 | 234 → 222 | 661 | 10.6 ms vs 14.8 ms |
+| 05:02 (`304227AD...`) | 0 and 0 | 74 and 74 | 126 | 10.8 ms vs 13.6 ms |
+
+At 05:02 the source ran at 120 FPS for only 7% of intervals. Fixed refresh
+receives frames in decode order, so a late frame holds back its successors.
+Two spans of these captures are gate fixtures (`tests/vrr/capturespans.h`,
+`versus-fixed-refresh-captures`):
+- 03:58 frames 25000-26999: policy 2 shows 6 visible events and 0 replacements;
+  policy 1 showed 31 and 10, fixed refresh 6.1. On real input, policy 1 was
+  worse than fixed sync.
+- The lossy 04:20 span (frames 21000-22599, 61-364 lost packets per frame,
+  20-46 ms late): policy 2 shows 54 events and 8 replacements, policy 1 56 and
+  10. Without the 32-frame rate limit there were 49 replacements and 93 events.
+  Fixed refresh shows 28 there, at 5.5 ms more latency. Its deeper queue hides
+  chaos that Balanced's adaptive buffer does not rise fast enough to absorb, so
+  the gate lists that span as an open known regression of the buffer, not of
+  ceiling replacement.
+
+Cost: after a late frame, latency stays up to one refresh higher until a long
+source interval repays the kept phase (03:58: 10.6 → 11.1 ms mean). A presenter
+that cannot latch still replaces about one frame in 48 at exactly its maximum
+refresh, about 150 a minute where fixed refresh's FIFO vsync shows 0-14. Policy
+2 trims policy 1's count by a fifth; a cure needs a latched or vsync-locked
+present at the ceiling. The gate lists it as an open known regression.
 Display-ceiling phase replacement (2026-10-20, `playout_ceiling_phase_replacement=1`):
 at exactly the display ceiling no presenter can repay inherited phase by
 showing frames faster. The 2026-10-20 03:58 capture (SHA-256 `B1A42391...132B`,
@@ -6132,7 +6212,7 @@ Consult the test names and assertions for the specific behavior being changed;
 the existence of a broad suite is not proof that a native API argument is tested.
 
 [tst_vrrbufferregressions.cpp](tests/vrr/tst_vrrbufferregressions.cpp) is the
-fast (about 12 s) adaptive-buffer regression gate. It builds every controller
+fast (about 9 s) adaptive-buffer regression gate. It builds every controller
 through [vrrproductionsession.h](tests/vrr/vrrproductionsession.h), which
 mirrors the worker's session resolution; `tst_vrrpacingworker` compares every
 resolved timing parameter with the worker's own, so the two cannot drift. No
@@ -6141,9 +6221,11 @@ them. Each contract names the commit whose regression it guards and is measured
 from simulated presentation, not the controller's own counters. Contracts the
 shipped policy currently violates are listed as known regressions: they print
 on every run, `--strict` fails them, and a fix fails the gate until the entry is
-deleted. Most older buffer regression tests pin the historical revision they
-were written against or leave bounded catch-up off. They protect exact replay
-of those revisions, not the live policy.
+deleted. Its `versus-fixed-refresh` scenarios score VRR at the display ceiling
+against a model of the fixed-refresh pacer on the same input: no more visible
+stutter, less latency. Most older buffer regression tests pin the historical
+revision they were written against or leave bounded catch-up off. They protect
+exact replay of those revisions, not the live policy.
 
 `tst_vrrdiagnostics` additionally exercises capture scope, environment restoration,
 export locking, file preservation and ZIP bounds; the independent Python ZIP
