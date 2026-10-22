@@ -8,8 +8,15 @@ SOURCES += $$PWD/tst_poweractions.cpp $$PWD/../../app/backend/nvhttp.cpp $$PWD/.
 HEADERS += $$PWD/../../app/backend/nvhttp.h $$PWD/../../app/backend/poweractions.h $$PWD/tlsfixture.h
 win32 {
     INCLUDEPATH += $$PWD/../../libs/windows/include
-    contains(QT_ARCH, x86_64): LIBS += -L$$PWD/../../libs/windows/lib/x64
-    contains(QT_ARCH, arm64): LIBS += -L$$PWD/../../libs/windows/lib/arm64
+    # Match the architecture-specific OpenSSL layout used by app/app.pro.
+    contains(QT_ARCH, x86_64) {
+        INCLUDEPATH += $$PWD/../../libs/windows/include/x64
+        LIBS += -L$$PWD/../../libs/windows/lib/x64
+    }
+    contains(QT_ARCH, arm64) {
+        INCLUDEPATH += $$PWD/../../libs/windows/include/arm64
+        LIBS += -L$$PWD/../../libs/windows/lib/arm64
+    }
     LIBS += -llibssl -llibcrypto
 }
 macx:!disable-prebuilts {
