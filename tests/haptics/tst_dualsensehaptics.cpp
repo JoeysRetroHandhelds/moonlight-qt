@@ -147,29 +147,29 @@ static void testSpeakerQueueLifecycle() {
   } backend;
   std::array<uint8_t, ML_SPEAKER_PCM_MAX_FRAMES * ML_SPEAKER_PCM_FRAME_BYTES>
       samples{};
-  backend.receiveSpeaker(1, 0, 0, ML_SPEAKER_PCM_FLAG_DISCONTINUITY,
+  backend.receiveSpeaker(backend.speakerOwnerToken, 1, 0, 0, ML_SPEAKER_PCM_FLAG_DISCONTINUITY,
                          samples.data(), 240);
   require(backend.speakerQueue.empty(),
           "speaker data drops without a ready renderer");
   backend.ready = true;
   backend.queue.push_back(Chunk{});
-  backend.receiveSpeaker(1, 0, 0, ML_SPEAKER_PCM_FLAG_DISCONTINUITY,
+  backend.receiveSpeaker(backend.speakerOwnerToken, 1, 0, 0, ML_SPEAKER_PCM_FLAG_DISCONTINUITY,
                          samples.data(), 240);
-  backend.receiveSpeaker(1, 0, 0, 0, samples.data(), 240);
+  backend.receiveSpeaker(backend.speakerOwnerToken, 1, 0, 0, 0, samples.data(), 240);
   require(backend.speakerQueue.size() == 1 && backend.queue.size() == 1,
           "speaker duplicate rejected without touching actuator queue");
-  backend.receiveSpeaker(1, 1, 240, 0, samples.data(), 240);
+  backend.receiveSpeaker(backend.speakerOwnerToken, 1, 1, 240, 0, samples.data(), 240);
   require(backend.speakerQueue.size() == 2,
           "speaker accepts contiguous sample position");
-  backend.receiveSpeaker(2, 0, 0, ML_SPEAKER_PCM_FLAG_DISCONTINUITY,
+  backend.receiveSpeaker(backend.speakerOwnerToken, 2, 0, 0, ML_SPEAKER_PCM_FLAG_DISCONTINUITY,
                          samples.data(), 240);
-  backend.receiveSpeaker(1, 2, 480, 0, samples.data(), 240);
+  backend.receiveSpeaker(backend.speakerOwnerToken, 1, 2, 480, 0, samples.data(), 240);
   require(backend.speakerQueue.size() == 1 &&
               backend.speakerQueue.front().generation == 2,
           "new slot generation clears old samples and rejects late generation "
           "packets");
   for (uint32_t sequence = 1; sequence <= 9; ++sequence) {
-    backend.receiveSpeaker(2, sequence, uint64_t(sequence) * 240, 0,
+    backend.receiveSpeaker(backend.speakerOwnerToken, 2, sequence, uint64_t(sequence) * 240, 0,
                            samples.data(), 240);
   }
   require(backend.speakerQueue.size() <= 8 && backend.queue.size() == 1,
@@ -180,7 +180,7 @@ static void testSpeakerQueueLifecycle() {
 
   DualSenseHaptics::resetSpeakerGenerationFloor();
   auto first = std::make_shared<TestBackend>();
-  const auto oldOwner = first->speakerOwnerToken;
+  const auto oldOwner = first->speakerOwnerToken.load();
   first->ready = true;
   {
     std::lock_guard<std::mutex> lock(registryMutex);
@@ -243,6 +243,76 @@ static void testSpeakerAdmissionContention() {
   DualSenseHaptics::detach(6);
 }
 
+static void testSpeakerSubmissionReset() {
+  struct TestBackend final : Backend {
+    void notify() override {}
+    bool speakerOutputReady() const override { return true; }
+  };
+  auto backend = std::make_shared<TestBackend>();
+  registry[8] = backend;
+  const auto dequeuedOwner = backend->speakerOwnerToken.load();
+  // These samples represent a slice already dequeued by the WASAPI worker.
+  // Exercise its actual shared submission gate and production routing, with
+  // only the device-buffer submission replaced by an in-memory sink.
+  const int16_t speaker[] = {12000, -12000};
+  const int16_t silence[] = {0, 0};
+  const int16_t actuator[] = {8000, -8000};
+  float output[4]{};
+  DualSenseHaptics::resetSpeakerGenerationFloor();
+  require(backend->submitSpeakerFrame(dequeuedOwner, [&](bool current) {
+    MlSpeakerPcmRouteFourChannel(current ? speaker : silence, actuator, output, 1);
+    return true;
+  }), "stale mixed-frame submission retains successful actuator output");
+  require(output[0] == 0 && output[1] == 0 && output[2] > 0 && output[3] < 0,
+          "reset before device submission silences old speaker slice, not actuators");
+  std::array<uint8_t, 960> staleSamples{};
+  backend->receiveSpeaker(dequeuedOwner, 1, 0, 0,
+      ML_SPEAKER_PCM_FLAG_DISCONTINUITY, staleSamples.data(), 240);
+  require(backend->speakerQueue.empty(),
+          "owner is revalidated under the queue mutex if reset wins after ingress check");
+  const auto currentOwner = backend->speakerOwnerToken.load();
+  backend->submitSpeakerFrame(currentOwner, [&](bool current) {
+    MlSpeakerPcmRouteFourChannel(current ? speaker : silence, actuator, output, 1);
+    return true;
+  });
+  require(output[0] > 0 && output[1] < 0, "new owner still renders speaker samples");
+
+  std::promise<void> submitting, finishSubmission, resetting;
+  auto finish = finishSubmission.get_future().share();
+  auto render = std::async(std::launch::async, [&] {
+    return backend->submitSpeakerFrame(currentOwner, [&](bool current) {
+      submitting.set_value();
+      finish.wait(); // The real worker holds the same gate through ReleaseBuffer.
+      return current;
+    });
+  });
+  submitting.get_future().wait();
+  auto reset = std::async(std::launch::async, [&] {
+    resetting.set_value();
+    DualSenseHaptics::resetSpeakerGenerationFloor();
+  });
+  resetting.get_future().wait();
+  const auto resetStatus = reset.wait_for(std::chrono::milliseconds(100));
+  auto query = std::async(std::launch::async, [] { return DualSenseHaptics::speakerOwner(8); });
+  const auto queryStatus = query.wait_for(std::chrono::milliseconds(200));
+  std::array<uint8_t, 960> samples{};
+  auto receive = std::async(std::launch::async, [&] {
+    DualSenseHaptics::receiveSpeaker(8, currentOwner, 1, 0, 0,
+        ML_SPEAKER_PCM_FLAG_DISCONTINUITY, samples.data(), 240);
+  });
+  const auto receiveStatus = receive.wait_for(std::chrono::milliseconds(200));
+  finishSubmission.set_value();
+  const bool rendered = render.get();
+  reset.get(); query.get(); receive.get();
+  require(resetStatus == std::future_status::timeout && rendered,
+          "reset cannot return until already admitted device submission completes");
+  require(queryStatus == std::future_status::ready && receiveStatus == std::future_status::ready,
+          "waiting for device submission holds neither registry nor callback admission");
+  require(backend->speakerOwnerToken != currentOwner && backend->speakerQueue.empty(),
+          "reset rotates and clears any samples received during in-flight submission");
+  DualSenseHaptics::detach(8);
+}
+
 static void testSpeakerOwnerIdentity() {
   struct TestBackend final : Backend {
     void notify() override {}
@@ -251,7 +321,7 @@ static void testSpeakerOwnerIdentity() {
   DualSenseHaptics::resetSpeakerGenerationFloor();
   auto first = std::make_shared<TestBackend>();
   registry[7] = first;
-  const auto retiredOwner = first->speakerOwnerToken;
+  const auto retiredOwner = first->speakerOwnerToken.load();
   // No packet has ever arrived: the generation floor is still zero.
   DualSenseHaptics::detach(7);
   auto replacement = std::make_shared<TestBackend>();
@@ -262,7 +332,7 @@ static void testSpeakerOwnerIdentity() {
   DualSenseHaptics::receiveSpeaker(7, 0, 10, 0, 0,
       ML_SPEAKER_PCM_FLAG_DISCONTINUITY, samples.data(), 240);
   require(replacement->speakerQueue.empty(), "unseen delayed and unknown owners fail closed before first delivery");
-  const auto currentOwner = replacement->speakerOwnerToken;
+  const auto currentOwner = replacement->speakerOwnerToken.load();
   require(currentOwner != retiredOwner, "slot reuse changes incarnation");
   DualSenseHaptics::receiveSpeaker(7, currentOwner, 10, 0, 0,
       ML_SPEAKER_PCM_FLAG_DISCONTINUITY, samples.data(), 240);
@@ -368,6 +438,10 @@ int main(int argc, char** argv) {
     SDL_Init(SDL_INIT_GAMECONTROLLER);
     struct QuitSDL { ~QuitSDL() { SDL_Quit(); } } quitSDL;
     try {
+        if (argc == 2 && std::strcmp(argv[1], "--submission-only") == 0) {
+            testSpeakerSubmissionReset();
+            return 0;
+        }
         if (argc == 2 && std::strcmp(argv[1], "--owner-only") == 0) {
             testSpeakerOwnerIdentity();
             return 0;
@@ -378,6 +452,7 @@ int main(int argc, char** argv) {
         testSpeakerRendererRouting();
         testSpeakerAdmissionContention();
         testSpeakerOwnerIdentity();
+        testSpeakerSubmissionReset();
         if (argc == 2 && std::strcmp(argv[1], "--speaker-only") == 0) {
             std::puts("DualSense: speaker wire, negotiation, queue lifecycle and four-channel routing passed");
             return 0;

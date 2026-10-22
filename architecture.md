@@ -6714,3 +6714,17 @@ and echoes it in version2 speaker packets (32-byte header). Unknown owners and
 version1 packets fail closed before generation checks. Legacy controllers and
 listener ABI remain unchanged. The receive callback uses try-lock admission,
 so contention drops a bounded audio block instead of delaying control input.
+
+Binding plus arrival is admitted as an atomic ordered pair. Under queue pressure
+or optional-binding allocation failure, ordinary arrival takes priority with
+only the PlayStation speaker capability cleared. A rejected MC fallback clears
+its batching alias before recycling memory; connection initialization clears
+any remaining aliases from a failed sender. No orphan binding is published.
+
+A per-endpoint submission gate now spans the actual WASAPI buffer submission
+and owner rotation. If rotation wins, an already-dequeued old speaker slice is
+silenced while independent actuator samples remain valid. If submission wins,
+rotation waits for that submission before returning. Waiting never holds the
+global registry mutex; a shared-pointer snapshot preserves endpoint lifetime.
+The callback still uses nonblocking admission and rechecks owner identity under
+the queue mutex. Already-submitted device audio cannot be recalled.
