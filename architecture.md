@@ -5502,7 +5502,7 @@ Input stays with SDL; no kernel module or Bluetooth reconfiguration is added on
 the client. Windows USB additionally matches the exact SDL Sony USB controller's
 HID device container to its active four-channel WASAPI render endpoint. The
 worker submits 48 kHz float samples to actuator channels 3/4 while keeping
-channels 1/2 silent; endpoints whose mix format is not four channels are rejected.
+channels 1/2 silent unless separately negotiated speaker PCM is available; endpoints whose mix format is not four channels are rejected.
 Shared-mode conversion uses the endpoint's channel mask. Startup buffers 10 ms
 (or waits at most 10 ms); the software FIFO is capped at 40 ms, separately from
 the requested 20 ms engine buffer. The actual engine buffer size is queried.
@@ -5514,6 +5514,18 @@ selected per application with `dualsense-haptics` or globally with `usbip_ds5`.
 The wired host identity is independent of the physical client's USB/Bluetooth
 connection. USB/IP stays on the Windows host; no USB/IP transport is required
 on the Moonlight client. Game soundtrack audio is not a substitute.
+
+Windows USB controller speaker playback (source update 2026-10-22) is a separate
+48 kHz stereo PCM path
+routed to channels 1/2 of that four-channel endpoint; actuator output remains on
+channels 3/4. The session passes the speaker renderer through
+`LiStartConnectionWithSpeakerPcm()`, separately from `CONNECTION_LISTENER_CALLBACKS`.
+This keeps the public callback-table layout and existing `LiStartConnection()`
+entry point compatible with older callers. Common-c advertises speaker PCM only
+when the separate callback is supplied, and per-controller capability 0x4000
+is advertised only for an opened Windows USB backend. The host must implement
+the matching 0x5602 contract. Bluetooth speaker rendering is not implemented;
+native Windows hardware playback remains unverified.
 
 Bluetooth playback drops old/duplicate packets, resets conversion history on
 packet loss,

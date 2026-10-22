@@ -10,4 +10,9 @@ bool attach(unsigned slot, SDL_GameController* controller);
 void detach(unsigned slot);
 bool playing(unsigned slot);
 void receive(uint16_t slot, uint32_t sequence, const uint8_t* pcm, uint16_t frames);
+bool speakerReady(unsigned slot);
+void resetSpeakerGenerationFloor();
+void receiveSpeaker(uint16_t slot, uint32_t generation, uint32_t sequence,
+                    uint64_t samplePosition, uint16_t flags, const uint8_t *pcm,
+                    uint16_t frames);
 }

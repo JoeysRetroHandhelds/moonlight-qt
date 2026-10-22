@@ -1974,9 +1974,16 @@ bool Session::startConnectionAsync()
         SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "PyroWave pacing hints: link %d Mbps, calibrated pace %d Mbps",
                     m_StreamConfig.pyrowaveLinkMbps, m_StreamConfig.pyrowavePaceMbps);
     }
-    int err = LiStartConnection(&hostInfo, &m_StreamConfig, &k_ConnCallbacks,
-                                &m_VideoCallbacks, &m_AudioCallbacks,
-                                NULL, 0, NULL, 0);
+    int err = LiStartConnectionWithSpeakerPcm(&hostInfo, &m_StreamConfig,
+                                              &k_ConnCallbacks,
+                                              &m_VideoCallbacks,
+                                              &m_AudioCallbacks,
+                                              NULL, 0, NULL, 0,
+#if defined(Q_OS_WIN) && SDL_VERSION_ATLEAST(2, 24, 0)
+                                              DualSenseHaptics::receiveSpeaker);
+#else
+                                              nullptr);
+#endif
     if (err != 0) {
         // We already displayed an error dialog in the stage failure
         // listener.
