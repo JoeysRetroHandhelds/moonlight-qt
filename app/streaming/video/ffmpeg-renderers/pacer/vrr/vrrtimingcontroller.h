@@ -39,6 +39,7 @@
     X(uint64_t, playout_absorbed_jitter_release, playoutAbsorbedJitterRelease, 0) \
     X(uint64_t, bounded_catchup_enabled, boundedCatchupEnabled, 0) \
     X(uint64_t, normalized_source_mapping, normalizedSourceMapping, 0) \
+    X(uint64_t, normalized_source_intrinsic_decode_gpu, normalizedSourceIntrinsicDecodeGpu, 0) \
     /* Zero preserves historical capture accounting. */ \
     /* 1 = raw applied offset; 2 = minus median per-second drift; */ \
     /* 3 = minus least-squares drift over the trailing 120 s. */ \
@@ -967,6 +968,10 @@ private:
     std::array<uint64_t, 64> m_DecodeGpuSamples {};
     size_t m_DecodeGpuNext = 0, m_DecodeGpuCount = 0;
     uint64_t m_DecodeGpuTypicalUs = 0;
+    static constexpr uint64_t PromptCollectionUs = 1000;
+    std::array<uint64_t, 64> m_DecodeIntrinsicSamples {};
+    size_t m_DecodeIntrinsicNext = 0, m_DecodeIntrinsicCount = 0;
+    uint64_t m_DecodeIntrinsicUs = 0;
     // First-to-last packet span of recent loss-free frames; their median is
     // the typical paced send of a full-size frame.
     std::array<uint32_t, 512> m_SendSpanSamples {};

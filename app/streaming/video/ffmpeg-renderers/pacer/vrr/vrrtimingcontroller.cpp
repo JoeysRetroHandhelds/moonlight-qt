@@ -232,6 +232,7 @@ VrrTimingParameters vrrTimingParametersForSession(
     parameters.playoutInputLayerLifecycle = parameters.playoutInputPercentileEnabled ? 2 : 0;
     parameters.boundedCatchupEnabled = config.experimentalBoundedCatchup;
     parameters.normalizedSourceMapping = config.experimentalBoundedCatchup;
+    parameters.normalizedSourceIntrinsicDecodeGpu = config.experimentalBoundedCatchup;
     // At the display ceiling no presenter can repay inherited phase by showing
     // frames faster. Released input buffer otherwise became standing ownership
     // phase on DXGI (5 ms for minutes in the 2026-10-20 capture at 120/120).
@@ -758,6 +759,17 @@ void VrrTimingController::learnDecodeGpu(const PacedFrame& frame)
     const auto middle = sorted.begin() + m_DecodeGpuCount / 2;
     std::nth_element(sorted.begin(), middle, sorted.begin() + m_DecodeGpuCount);
     m_DecodeGpuTypicalUs = *middle;
+    // A late collection includes intentional pacing-queue residence even
+    // when the final API wait blocks. Only prompt collection measures service.
+    const uint64_t collectedUs = complete - std::min(complete, frame.decodeSyncWaitUs());
+    if (collectedUs > output && collectedUs - output > PromptCollectionUs) return;
+    m_DecodeIntrinsicSamples[m_DecodeIntrinsicNext] = complete - output;
+    m_DecodeIntrinsicNext = (m_DecodeIntrinsicNext + 1) % m_DecodeIntrinsicSamples.size();
+    m_DecodeIntrinsicCount = std::min(m_DecodeIntrinsicCount + 1, m_DecodeIntrinsicSamples.size());
+    auto intrinsic = m_DecodeIntrinsicSamples;
+    const auto intrinsicMiddle = intrinsic.begin() + m_DecodeIntrinsicCount / 2;
+    std::nth_element(intrinsic.begin(), intrinsicMiddle, intrinsic.begin() + m_DecodeIntrinsicCount);
+    m_DecodeIntrinsicUs = *intrinsicMiddle;
 }
 
 uint64_t VrrTimingController::sendSpanCorrectionUs(const PacedFrame& frame)
@@ -800,7 +812,17 @@ uint64_t VrrTimingController::sourceMappingUs(const PacedFrame& frame) const
         // PyroWave's decoder output is GPU submission, not completion, so the
         // service cost ends at the (estimated) decode completion. Using output
         // planned frames ~4 ms before they could be decoded (2026-10-10).
-        return frame.reassembledUs() + (estimatedDecodeCompleteUs(frame) - frame.decodeSubmitUs());
+        uint64_t completionUs = estimatedDecodeCompleteUs(frame);
+        if (m_Parameters.normalizedSourceIntrinsicDecodeGpu) {
+            // Do not advance the producer clock by our own queue residence.
+            // Without a prompt sample, use immutable output; the worker still
+            // establishes actual GPU readiness before scheduling/rendering.
+            completionUs = frame.decoderOutputUs();
+            if (m_DecodeIntrinsicUs) completionUs = std::min(frame.decodeCompleteUs(),
+                saturatingAdd(frame.decoderOutputUs(), m_DecodeIntrinsicUs));
+        }
+        return saturatingAdd(frame.reassembledUs(),
+            completionUs - std::min(completionUs, frame.decodeSubmitUs()));
     }
     return raw;
 }

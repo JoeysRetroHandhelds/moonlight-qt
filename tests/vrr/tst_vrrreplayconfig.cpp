@@ -12,6 +12,7 @@ class VrrReplayConfigTest : public QObject
 
 private slots:
     void defaultsRoundTrip();
+    void intrinsicProducerClockRoundTrip();
     void customToleranceRoundTrip();
     void inputPercentileToleranceRoundTrip();
     void initialCalibrationPolicyRoundTrip();
@@ -296,6 +297,26 @@ void VrrReplayConfigTest::inputPercentileToleranceRoundTrip()
         {{"playout_input_percentile_tolerance_us", 0}}, policy, error), qPrintable(error));
     QCOMPARE(policy.playoutInputPercentileToleranceUs, uint64_t(0));
 }
+
+void VrrReplayConfigTest::intrinsicProducerClockRoundTrip()
+{
+    VrrSessionConfig session;
+    session.experimentalBoundedCatchup = true;
+    const auto production = vrrTimingParametersForSession(session);
+    QCOMPARE(production.normalizedSourceIntrinsicDecodeGpu, uint64_t(1));
+    auto snapshot = vrrTimingParametersToJson(production);
+    VrrTimingParameters restored;
+    QString error;
+    QVERIFY2(applyVrrReplayControllerSnapshot(snapshot, restored, error), qPrintable(error));
+    QCOMPARE(restored.normalizedSourceIntrinsicDecodeGpu, uint64_t(1));
+    snapshot.remove("normalized_source_intrinsic_decode_gpu");
+    restored = VrrTimingParameters{};
+    QVERIFY2(applyVrrReplayControllerSnapshot(snapshot, restored, error), qPrintable(error));
+    QCOMPARE(restored.normalizedSourceIntrinsicDecodeGpu, uint64_t(0));
+    QVERIFY(!applyVrrReplayControllerSnapshot({{"normalized_source_intrinsic_decode_gpu", 2}}, restored, error));
+    QCOMPARE(restored.normalizedSourceIntrinsicDecodeGpu, uint64_t(0));
+}
+
 
 void VrrReplayConfigTest::defaultsRoundTrip()
 {

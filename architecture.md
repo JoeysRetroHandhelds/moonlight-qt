@@ -1,3 +1,31 @@
+PyroWave producer-clock queue-residence correction (2026-10-21, source baseline
+`04ad823f`): new bounded-catch-up sessions select
+`normalized_source_intrinsic_decode_gpu=1`. The normalized producer clock uses
+GPU service samples only when completion collection started within 1 ms of
+immutable decoder output. A later collection can include intentional pacing
+queue residence even if its final API wait exceeded 200 us. The last 64 prompt
+samples supply a median; without one, immutable output anchors the clock.
+The worker still establishes actual GPU readiness before rendering. Input
+adaptation, source cadence, queue limits and physical presentation floors are
+unchanged. Captures omitting the new field select zero and replay historically;
+the calibration identity includes the new clock selection.
+
+The newest completed matching 4:4:4 10-bit capture is
+`moonlight-pacing-20261021-195637-128136-connection-4.vrrtrace`, SHA-256
+`53629cfae8eeaf15cffdc90dc0330faa1de09b0e004a441464661caf9d8b8cc6`.
+The later final connection uses 4:2:0 and is retained as a separate baseline.
+The 4:4:4 capture passes strict exact replay and sequence-integrity checks.
+A deterministic delayed-collection regression fails before the correction:
+producer-clock skew is 15.2 ms; afterward it is 0.2 ms. A prompt genuinely long
+GPU decode retains its full service duration. On the identical fixed-admission
+capture, median decoder-output-to-submission falls 25.016 -> 22.034 ms and p95
+28.369 -> 24.431 ms; presented jerk over 2 ms remains 92 per mille, with p99
+8.221 -> 8.200 ms. Neither scenario saturates. Fixed-admission replay retains
+captured discarded frames and cannot prove that a live candidate avoids them.
+GPU/compositor service and physical display improvement require a fresh live
+comparison. Evidence and the preserved exact baselines are under
+`build/444-regression/`.
+
 Display-ceiling policy 2 (2026-10-20, `playout_ceiling_phase_replacement=2`):
 policy 1 (below) shed the phase every late frame forced with a replacement, so
 at the ceiling each late frame cost a visible skip. The gate now models
