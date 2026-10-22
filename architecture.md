@@ -5523,7 +5523,11 @@ channels 3/4. The session passes the speaker renderer through
 This keeps the public callback-table layout and existing `LiStartConnection()`
 entry point compatible with older callers. Common-c advertises speaker PCM only
 when the separate callback is supplied, and per-controller capability 0x4000
-is advertised only for an opened Windows USB backend. The host must implement
+is advertised only for an opened Windows USB PlayStation backend. The 16-bit
+capability space has no unallocated bit once the pending Steam extensions are
+included: 0x4000 is a type-scoped alias, not a globally unique capability.
+For Steam it means attributes, never speaker PCM; the host must check controller
+type and the separate speaker session feature before forwarding. The host must implement
 the matching 0x5602 contract. Bluetooth speaker rendering is not implemented;
 native Windows hardware playback remains unverified.
 

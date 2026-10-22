@@ -573,8 +573,8 @@ void SdlInputHandler::sendControllerArrival(GamepadState* state)
     uint8_t type = moonlightControllerType(state->controller);
 
     if (state->hapticsAttached) capabilities |= LI_CCAP_HAPTICS_PCM;
-    if (state->speakerPcmAttached)
-      capabilities |= LI_CCAP_CONTROLLER_SPEAKER_PCM;
+    if (state->speakerPcmAttached && type == LI_CTYPE_PS)
+      capabilities |= LI_CCAP_PS_SPEAKER_PCM;
 
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
                 "Sending controller arrival: player %d type %u caps 0x%x buttons 0x%x",

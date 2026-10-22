@@ -115,13 +115,15 @@ static void testSpeakerWireAndNegotiation() {
   require(!MlSpeakerPcmValidate(nullptr, packet.size()),
           "speaker null payload rejected");
 
+  require(!MlSpeakerPcmCanSend(ML_FF_CONTROLLER_SPEAKER_PCM, 4, LI_CCAP_PS_SPEAKER_PCM, 1),
+          "Steam attributes capability must not enable speaker PCM");
   for (int session = 0; session != 2; ++session) {
     for (int controller = 0; controller != 2; ++controller) {
       for (int source = 0; source != 2; ++source) {
         const bool expected = session && controller && source;
         require(
-            MlSpeakerPcmCanSend(session ? ML_FF_CONTROLLER_SPEAKER_PCM : 0,
-                                controller ? LI_CCAP_CONTROLLER_SPEAKER_PCM : 0,
+            MlSpeakerPcmCanSend(session ? ML_FF_CONTROLLER_SPEAKER_PCM : 0, 2,
+                                controller ? LI_CCAP_PS_SPEAKER_PCM : 0,
                                 source) == expected,
             "speaker session/controller/source gates are independent");
       }
