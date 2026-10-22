@@ -239,6 +239,9 @@ VrrTimingParameters vrrTimingParametersForSession(
     // queued frame: policy 1 shed it with a skip per late frame (12 a minute
     // at one 4 ms late frame per 5 s) where fixed refresh showed none.
     parameters.playoutCeilingPhaseReplacement = 2;
+    // Small encoded frames finish the host's paced send early; they must not
+    // pull the playout offset ahead of the full-size frames that follow.
+    parameters.playoutOffsetSendSpanNormalization = 1;
     if (parameters.boundedCatchupEnabled) {
         parameters.playoutCatchupCarryLimitUs = kCatchupCarryLimitUs;
         parameters.playoutCatchupCarryLimitPeriodPerMille = kCatchupCarryLimitPeriodPerMille;
@@ -757,6 +760,36 @@ void VrrTimingController::learnDecodeGpu(const PacedFrame& frame)
     m_DecodeGpuTypicalUs = *middle;
 }
 
+uint64_t VrrTimingController::sendSpanCorrectionUs(const PacedFrame& frame)
+{
+    // The host paces a frame's packets over a span proportional to its size
+    // (about 3.35 ms for a full 4K PyroWave frame on 2026-10-20), and the
+    // mapping clock starts at the last packet. A run of small frames therefore
+    // lowered the offset's window minimum by ~3 ms; the next full frames then
+    // measured that much late and grew the input buffer for its whole history.
+    // Teach the offset the usual span instead. The frame's own readiness and
+    // lateness are unchanged: an early small frame is genuinely early.
+    constexpr uint64_t kDeadbandUs = 500;
+    constexpr size_t kMinimumSamples = 64;
+    const uint64_t receive = frame.receiveUs();
+    const uint64_t reassembled = frame.reassembledUs();
+    if (!receive || reassembled < receive) return 0;
+    const uint64_t spanUs = reassembled - receive;
+    const uint64_t correctionUs = m_SendSpanCount >= kMinimumSamples &&
+        m_SendSpanTypicalUs > spanUs + kDeadbandUs ? m_SendSpanTypicalUs - spanUs : 0;
+    // A lossy frame's span ends at a recovery deadline, not the paced send.
+    if (frame.lostPackets() != 0) return correctionUs;
+    m_SendSpanSamples[m_SendSpanNext] = uint32_t(std::min<uint64_t>(spanUs, UINT32_MAX));
+    m_SendSpanNext = (m_SendSpanNext + 1) % m_SendSpanSamples.size();
+    m_SendSpanCount = std::min(m_SendSpanCount + 1, m_SendSpanSamples.size());
+    if (m_SendSpanCount < kMinimumSamples || m_SendSpanNext % 16 != 0) return correctionUs;
+    auto sorted = m_SendSpanSamples;
+    const auto middle = sorted.begin() + m_SendSpanCount / 2;
+    std::nth_element(sorted.begin(), middle, sorted.begin() + m_SendSpanCount);
+    m_SendSpanTypicalUs = *middle;
+    return correctionUs;
+}
+
 uint64_t VrrTimingController::sourceMappingUs(const PacedFrame& frame) const
 {
     const uint64_t raw = m_Parameters.playoutSourceMappingDecoderOutput != 0 ?
@@ -872,7 +905,8 @@ VrrTimingDecision VrrTimingController::schedule(const PacedFrame& frame,
     if (timestampPlayout) {
         const uint64_t mappingUs = sourceMappingUs(frame);
         const int64_t offsetUs = signedDifference(mappingUs,
-                                                  rtpUs);
+                                                  rtpUs) +
+            int64_t(m_Parameters.playoutOffsetSendSpanNormalization ? sendSpanCorrectionUs(frame) : 0);
         const bool timeBasedOffset =
             m_Parameters.playoutOffsetSlewUsPerSecond != 0;
         const uint64_t offsetClockUs = timeBasedOffset ?

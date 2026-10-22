@@ -297,7 +297,12 @@
     /* 2: also keeps phase late input forced (up to a refresh) and replaces */ \
     /* beyond a refresh at once, so late frames cost fewer skips than fixed */ \
     /* refresh's repeats and drops. */ \
-    X(uint64_t, playout_ceiling_phase_replacement, playoutCeilingPhaseReplacement, 0)
+    X(uint64_t, playout_ceiling_phase_replacement, playoutCeilingPhaseReplacement, 0) \
+    /* Nonzero: a frame whose packets arrived over a much shorter span than */ \
+    /* usual teaches the playout offset as if it had the usual span. A small */ \
+    /* encoded frame finishes the host's paced send early; it is not proof */ \
+    /* that the next full-size frame can be shown earlier. */ \
+    X(uint64_t, playout_offset_send_span_normalization, playoutOffsetSendSpanNormalization, 0)
 
 // Every value that changes VRR policy remains replaceable by replay without
 // rebuilding the controller. Production callers use these defaults.
@@ -782,6 +787,7 @@ private:
     uint64_t sourceMappingUs(const PacedFrame& frame) const;
     uint64_t estimatedDecodeCompleteUs(const PacedFrame& frame) const;
     void learnDecodeGpu(const PacedFrame& frame);
+    uint64_t sendSpanCorrectionUs(const PacedFrame& frame);
     CadenceObservation observeCadence(const PacedFrame& frame);
     void observeRtpCadence(uint32_t rtpDelta,
                            CadenceObservation& observation);
@@ -961,6 +967,11 @@ private:
     std::array<uint64_t, 64> m_DecodeGpuSamples {};
     size_t m_DecodeGpuNext = 0, m_DecodeGpuCount = 0;
     uint64_t m_DecodeGpuTypicalUs = 0;
+    // First-to-last packet span of recent loss-free frames; their median is
+    // the typical paced send of a full-size frame.
+    std::array<uint32_t, 512> m_SendSpanSamples {};
+    size_t m_SendSpanNext = 0, m_SendSpanCount = 0;
+    uint64_t m_SendSpanTypicalUs = 0;
     uint64_t m_InputPercentileBeforeUs = 0;
     // Interval-buffer demand remembered per source-rate epoch, keyed by
     // quarter-octave rate bucket.

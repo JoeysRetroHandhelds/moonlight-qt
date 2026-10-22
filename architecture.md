@@ -4240,6 +4240,30 @@ an old phase minimum from steering the new phase and avoids FPS-dependent
 steady-state convergence. The minimum remains an empirical client mapping,
 not measured host capture latency or absolute host/client synchronization.
 
+Send-span normalization (`playout_offset_send_span_normalization`, live
+sessions 1, recorded captures 0). The mapping clock starts at the last packet,
+and the host paces a frame's packets over a span proportional to its encoded
+size. The 2026-10-20 AmbidexL host trace joined to client capture
+`20261020-220312` by frame and RTP (127,388 frames, no mismatch) shows full 4K
+PyroWave frames (~620 packets) sent over 3.35 ms and about 1.5% small frames
+(115-400 packets) sent in 0.3-1.6 ms. Their last packet arrives 3.1-3.6 ms
+earlier relative to RTP, the first packet only 0.3-0.9 ms earlier, and network
+delay is unchanged. A burst of them lowered the offset's window minimum, the
+following full frames measured 4-6 ms late, and the adaptive buffer grew 2-3 ms
+for its whole history; 13 of the capture's 14 buffer rises follow such a burst.
+The remaining rise (about 3605 s) is real host encode/send latency growth.
+Now a loss-free frame whose first-to-last packet span is more than 0.5 ms below
+the median of the last 512 spans teaches the offset as if it had the median
+span. Its own readiness and lateness are unchanged, a lasting latency drop of
+full frames is still adopted, and a sustained small-frame scene becomes the
+median within about 5 s. Exact replay of `20261020-220312` (session base, flag
+0 versus 1): 23,007 frames map up to 2.9 ms later, the 3405 s rise peaks at
+7.4 instead of 8.9 ms, session buffer p90/p99 fall 160/390 us, decode-to-submission
+p50/p90 fall 19/165 us, p99 rises 186 us, and presented jerk is unchanged (65 per
+mille over 2 ms). The replayed buffer still swings between 1 and 8.3 ms in both
+runs; that controller sensitivity is separate. `tst_inputaccounting` pins the
+burst, lasting-drop, and sustained-small cases.
+
 Timestamp mode zeroes the separate legacy readiness reserve/phase demand:
 the timestamp playout delay is the jitter budget. Without valid RTP, the
 controller uses its fallback cadence/readiness path, with phase and reserve
