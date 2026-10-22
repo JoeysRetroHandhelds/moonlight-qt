@@ -5705,7 +5705,7 @@ Input stays with SDL; no kernel module or Bluetooth reconfiguration is added on
 the client. Windows USB additionally matches the exact SDL Sony USB controller's
 HID device container to its active four-channel WASAPI render endpoint. The
 worker submits 48 kHz float samples to actuator channels 3/4 while keeping
-channels 1/2 silent; endpoints whose mix format is not four channels are rejected.
+channels 1/2 silent unless separately negotiated speaker PCM is available; endpoints whose mix format is not four channels are rejected.
 Shared-mode conversion uses the endpoint's channel mask. Startup buffers 10 ms
 (or waits at most 10 ms); the software FIFO is capped at 40 ms, separately from
 the requested 20 ms engine buffer. The actual engine buffer size is queried.
@@ -5717,6 +5717,22 @@ selected per application with `dualsense-haptics` or globally with `usbip_ds5`.
 The wired host identity is independent of the physical client's USB/Bluetooth
 connection. USB/IP stays on the Windows host; no USB/IP transport is required
 on the Moonlight client. Game soundtrack audio is not a substitute.
+
+Windows USB controller speaker playback (source update 2026-10-22) is a separate
+48 kHz stereo PCM path
+routed to channels 1/2 of that four-channel endpoint; actuator output remains on
+channels 3/4. The session passes the speaker renderer through
+`LiStartConnectionWithSpeakerPcm()`, separately from `CONNECTION_LISTENER_CALLBACKS`.
+This keeps the public callback-table layout and existing `LiStartConnection()`
+entry point compatible with older callers. Common-c advertises speaker PCM only
+when the separate callback is supplied, and per-controller capability 0x4000
+is advertised only for an opened Windows USB PlayStation backend. The 16-bit
+capability space has no unallocated bit once the pending Steam extensions are
+included: 0x4000 is a type-scoped alias, not a globally unique capability.
+For Steam it means attributes, never speaker PCM; the host must check controller
+type and the separate speaker session feature before forwarding. The host must implement
+the matching 0x5602 contract. Bluetooth speaker rendering is not implemented;
+native Windows hardware playback remains unverified.
 
 Bluetooth playback drops old/duplicate packets, resets conversion history on
 packet loss,
@@ -6887,3 +6903,31 @@ frame can have queue time below the budget, and a zero-budget frame can still
 wait for physical presentation constraints. Subtracting the budget from queue
 would therefore discard measured time. OS presentation after CPU submission,
 scanout and pixel response are outside the measured total shown here.
+
+### Speaker owner binding (source protocol version 2)
+
+A host generation alone cannot identify a reused client slot before first
+packet delivery. The client assigns a nonzero 64-bit incarnation per backend
+allocation and rotates retained endpoints on reconnect; it never resets or
+wraps the process counter. Exhaustion disables speaker advertisement. The
+additive common-c arrival API sends a reliable owner binding (input magic
+0x55000009, distinct from Steam attributes0x55000008), then unchanged legacy
+arrival on the same controller channel. The host consumes that binding once
+and echoes it in version2 speaker packets (32-byte header). Unknown owners and
+version1 packets fail closed before generation checks. Legacy controllers and
+listener ABI remain unchanged. The receive callback uses try-lock admission,
+so contention drops a bounded audio block instead of delaying control input.
+
+Binding plus arrival is admitted as an atomic ordered pair. Under queue pressure
+or optional-binding allocation failure, ordinary arrival takes priority with
+only the PlayStation speaker capability cleared. A rejected MC fallback clears
+its batching alias before recycling memory; connection initialization clears
+any remaining aliases from a failed sender. No orphan binding is published.
+
+A per-endpoint submission gate now spans the actual WASAPI buffer submission
+and owner rotation. If rotation wins, an already-dequeued old speaker slice is
+silenced while independent actuator samples remain valid. If submission wins,
+rotation waits for that submission before returning. Waiting never holds the
+global registry mutex; a shared-pointer snapshot preserves endpoint lifetime.
+The callback still uses nonblocking admission and rechecks owner identity under
+the queue mutex. Already-submitted device audio cannot be recalled.
