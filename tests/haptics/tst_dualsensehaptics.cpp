@@ -8,6 +8,7 @@
 #include <cstdio>
 #include <cstring>
 #include <stdexcept>
+#include <future>
 
 static void require(bool condition, const char* message) {
     if (!condition) throw std::runtime_error(message);
@@ -68,7 +69,7 @@ static void testAdmission() {
 
 static void testSpeakerWireAndNegotiation() {
   std::array<uint8_t, ML_SPEAKER_PCM_MAX_PAYLOAD> packet{};
-  packet[0] = 1;
+  packet[0] = 2;
   packet[1] = 1;
   MlSpeakerWrite16(packet.data() + 2, 3);
   MlSpeakerWrite32(packet.data() + 4, 7);
@@ -76,6 +77,7 @@ static void testSpeakerWireAndNegotiation() {
   MlSpeakerWrite64(packet.data() + 12, 2400);
   MlSpeakerWrite16(packet.data() + 20, ML_SPEAKER_PCM_MAX_FRAMES);
   MlSpeakerWrite16(packet.data() + 22, ML_SPEAKER_PCM_FLAG_DISCONTINUITY);
+  MlSpeakerWrite64(packet.data() + 24, 0x123456789abcdef0ULL);
   require(MlSpeakerPcmValidate(packet.data(), packet.size()),
           "speaker maximum packet validates");
   require(MlSpeakerRead32(packet.data() + 4) == 7 &&
@@ -83,9 +85,15 @@ static void testSpeakerWireAndNegotiation() {
           "speaker generation and sample position round trip");
 
   auto invalid = packet;
-  invalid[0] = 2;
+  invalid[0] = 1;
   require(!MlSpeakerPcmValidate(invalid.data(), invalid.size()),
           "speaker version rejected");
+  invalid = packet;
+  MlSpeakerWrite64(invalid.data() + 24, 0);
+  require(!MlSpeakerPcmValidate(invalid.data(), invalid.size()), "unbound speaker packet rejected");
+  invalid = packet;
+  MlSpeakerWrite64(invalid.data() + 12, UINT64_MAX);
+  require(!MlSpeakerPcmValidate(invalid.data(), invalid.size()), "sample position overflow rejected");
   invalid = packet;
   invalid[1] = 2;
   require(!MlSpeakerPcmValidate(invalid.data(), invalid.size()),
@@ -172,14 +180,15 @@ static void testSpeakerQueueLifecycle() {
 
   DualSenseHaptics::resetSpeakerGenerationFloor();
   auto first = std::make_shared<TestBackend>();
+  const auto oldOwner = first->speakerOwnerToken;
   first->ready = true;
   {
     std::lock_guard<std::mutex> lock(registryMutex);
     registry[5] = first;
   }
   DualSenseHaptics::receiveSpeaker(
-      5, 10, 0, 0, ML_SPEAKER_PCM_FLAG_DISCONTINUITY, samples.data(), 240);
-  DualSenseHaptics::receiveSpeaker(5, 10, 1, 240, 0, samples.data(), 240);
+      5, oldOwner, 10, 0, 0, ML_SPEAKER_PCM_FLAG_DISCONTINUITY, samples.data(), 240);
+  DualSenseHaptics::receiveSpeaker(5, oldOwner, 10, 1, 240, 0, samples.data(), 240);
   require(first->speakerQueue.size() == 2,
           "successive packets in the current generation are admitted");
   DualSenseHaptics::detach(5);
@@ -189,15 +198,99 @@ static void testSpeakerQueueLifecycle() {
     std::lock_guard<std::mutex> lock(registryMutex);
     registry[5] = reused;
   }
-  DualSenseHaptics::receiveSpeaker(5, 10, 1, 240, 0, samples.data(), 240);
+  DualSenseHaptics::receiveSpeaker(5, oldOwner, 10, 1, 240, 0, samples.data(), 240);
   require(reused->speakerQueue.empty(),
           "reused client slot rejects a delayed prior generation");
   DualSenseHaptics::receiveSpeaker(
-      5, 11, 0, 0, ML_SPEAKER_PCM_FLAG_DISCONTINUITY, samples.data(), 240);
+      5, reused->speakerOwnerToken, 11, 0, 0, ML_SPEAKER_PCM_FLAG_DISCONTINUITY, samples.data(), 240);
   require(reused->speakerQueue.size() == 1 &&
               reused->speakerQueue.front().generation == 11,
           "reused client slot accepts the new generation");
   DualSenseHaptics::detach(5);
+}
+
+static void testSpeakerAdmissionContention() {
+  struct TestBackend final : Backend {
+    void notify() override {}
+    bool speakerOutputReady() const override { return true; }
+  };
+  DualSenseHaptics::resetSpeakerGenerationFloor();
+  auto backend = std::make_shared<TestBackend>();
+  registry[6] = backend;
+  std::array<uint8_t, 960> samples{};
+  samples[0] = 17;
+  for (auto *contended : {&registryMutex, &backend->mutex}) {
+    std::unique_lock<std::mutex> held(*contended);
+    std::promise<void> started;
+    auto delivery = std::async(std::launch::async, [&] {
+      started.set_value();
+      DualSenseHaptics::receiveSpeaker(6, backend->speakerOwnerToken, 10, 0, 0,
+          ML_SPEAKER_PCM_FLAG_DISCONTINUITY, samples.data(), 240);
+    });
+    started.get_future().wait();
+    const auto status = delivery.wait_for(std::chrono::milliseconds(200));
+    held.unlock();
+    delivery.get();
+    require(status == std::future_status::ready,
+            "speaker callback returns while another thread still owns either lock");
+    require(backend->speakerQueue.empty(), "contention drops instead of queuing late audio");
+  }
+  DualSenseHaptics::receiveSpeaker(6, backend->speakerOwnerToken, 10, 1, 240, 0, samples.data(), 240);
+  samples[0] = 99;
+  require(backend->speakerQueue.size() == 1 &&
+          backend->speakerQueue.front().pcm[0] == 17,
+          "admission resumes with an owned sample copy after contention");
+  DualSenseHaptics::detach(6);
+}
+
+static void testSpeakerOwnerIdentity() {
+  struct TestBackend final : Backend {
+    void notify() override {}
+    bool speakerOutputReady() const override { return true; }
+  };
+  DualSenseHaptics::resetSpeakerGenerationFloor();
+  auto first = std::make_shared<TestBackend>();
+  registry[7] = first;
+  const auto retiredOwner = first->speakerOwnerToken;
+  // No packet has ever arrived: the generation floor is still zero.
+  DualSenseHaptics::detach(7);
+  auto replacement = std::make_shared<TestBackend>();
+  registry[7] = replacement;
+  std::array<uint8_t, 960> samples{};
+  DualSenseHaptics::receiveSpeaker(7, retiredOwner, 10, 0, 0,
+      ML_SPEAKER_PCM_FLAG_DISCONTINUITY, samples.data(), 240);
+  DualSenseHaptics::receiveSpeaker(7, 0, 10, 0, 0,
+      ML_SPEAKER_PCM_FLAG_DISCONTINUITY, samples.data(), 240);
+  require(replacement->speakerQueue.empty(), "unseen delayed and unknown owners fail closed before first delivery");
+  const auto currentOwner = replacement->speakerOwnerToken;
+  require(currentOwner != retiredOwner, "slot reuse changes incarnation");
+  DualSenseHaptics::receiveSpeaker(7, currentOwner, 10, 0, 0,
+      ML_SPEAKER_PCM_FLAG_DISCONTINUITY, samples.data(), 240);
+  require(replacement->speakerQueue.size() == 1, "current owner first packet is accepted without quarantine");
+  DualSenseHaptics::resetSpeakerGenerationFloor();
+  require(replacement->speakerOwnerToken != currentOwner && replacement->speakerQueue.empty(),
+          "reconnect rotates even retained endpoints and clears old audio");
+  DualSenseHaptics::receiveSpeaker(7, currentOwner, 20, 0, 0,
+      ML_SPEAKER_PCM_FLAG_DISCONTINUITY, samples.data(), 240);
+  require(replacement->speakerQueue.empty(), "prior session owner is rejected even with newer host generation");
+  DualSenseHaptics::receiveSpeaker(7, replacement->speakerOwnerToken, 1, 0, 0,
+      ML_SPEAKER_PCM_FLAG_DISCONTINUITY, samples.data(), 240);
+  require(replacement->speakerQueue.size() == 1, "new session may restart host generation with a fresh owner");
+  DualSenseHaptics::detach(7);
+  std::atomic<uint64_t> nearWrap{std::numeric_limits<uint64_t>::max() - 1};
+  require(allocateSpeakerOwner(nearWrap) == std::numeric_limits<uint64_t>::max(), "full64-bit owner width preserved");
+  require(allocateSpeakerOwner(nearWrap) == 0 && allocateSpeakerOwner(nearWrap) == 0,
+          "incarnation exhaustion stays disabled rather than wrapping");
+
+  std::array<uint8_t, ML_SPEAKER_BIND_SIZE> binding{};
+  require(MlSpeakerPcmBuildBinding(binding.data(), binding.size(), 15, UINT64_MAX), "binding builds full-width owner");
+  require(binding[3] == 16 && MlSpeakerRead32(binding.data() + 4) == ML_SPEAKER_BIND_MAGIC &&
+          MlSpeakerRead16(binding.data() + 8) == 15 && MlSpeakerRead64(binding.data() + 12) == UINT64_MAX,
+          "binding uses exact legacy input header and owner bytes");
+  require(!MlSpeakerPcmBuildBinding(binding.data(), binding.size(), 16, 1) &&
+          !MlSpeakerPcmBuildBinding(binding.data(), binding.size(), 0, 0) &&
+          !MlSpeakerPcmBuildBinding(binding.data(), binding.size() - 1, 0, 1),
+          "binding rejects invalid slot owner and packet size");
 }
 
 static void testSpeakerRendererRouting() {
@@ -275,10 +368,16 @@ int main(int argc, char** argv) {
     SDL_Init(SDL_INIT_GAMECONTROLLER);
     struct QuitSDL { ~QuitSDL() { SDL_Quit(); } } quitSDL;
     try {
+        if (argc == 2 && std::strcmp(argv[1], "--owner-only") == 0) {
+            testSpeakerOwnerIdentity();
+            return 0;
+        }
         testAdmission();
         testSpeakerWireAndNegotiation();
         testSpeakerQueueLifecycle();
         testSpeakerRendererRouting();
+        testSpeakerAdmissionContention();
+        testSpeakerOwnerIdentity();
         if (argc == 2 && std::strcmp(argv[1], "--speaker-only") == 0) {
             std::puts("DualSense: speaker wire, negotiation, queue lifecycle and four-channel routing passed");
             return 0;

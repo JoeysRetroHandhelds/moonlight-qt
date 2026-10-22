@@ -6700,3 +6700,17 @@ frame can have queue time below the budget, and a zero-budget frame can still
 wait for physical presentation constraints. Subtracting the budget from queue
 would therefore discard measured time. OS presentation after CPU submission,
 scanout and pixel response are outside the measured total shown here.
+
+### Speaker owner binding (source protocol version 2)
+
+A host generation alone cannot identify a reused client slot before first
+packet delivery. The client assigns a nonzero 64-bit incarnation per backend
+allocation and rotates retained endpoints on reconnect; it never resets or
+wraps the process counter. Exhaustion disables speaker advertisement. The
+additive common-c arrival API sends a reliable owner binding (input magic
+0x55000009, distinct from Steam attributes0x55000008), then unchanged legacy
+arrival on the same controller channel. The host consumes that binding once
+and echoes it in version2 speaker packets (32-byte header). Unknown owners and
+version1 packets fail closed before generation checks. Legacy controllers and
+listener ABI remain unchanged. The receive callback uses try-lock admission,
+so contention drops a bounded audio block instead of delaying control input.

@@ -22,6 +22,8 @@
 #include "dualsensehid.h"
 #include "../../../third-party/saxense/packet.h"
 #include <array>
+#include <atomic>
+#include <limits>
 #include <algorithm>
 #include <chrono>
 #include <condition_variable>
@@ -56,7 +58,18 @@ struct SpeakerChunk {
 };
 
 // Input side shared by every transport. Workers own conversion and pacing.
+std::atomic<uint64_t> nextSpeakerOwnerToken{0};
+uint64_t allocateSpeakerOwner(std::atomic<uint64_t>& counter) {
+  auto previous = counter.load(std::memory_order_relaxed);
+  for (;;) {
+    if (previous == std::numeric_limits<uint64_t>::max()) return 0;
+    if (counter.compare_exchange_weak(previous, previous + 1, std::memory_order_relaxed))
+      return previous + 1;
+  }
+}
+
 struct Backend {
+    uint64_t speakerOwnerToken = allocateSpeakerOwner(nextSpeakerOwnerToken);
     std::mutex mutex;
     std::deque<Chunk> queue;
     std::deque<SpeakerChunk> speakerQueue;
@@ -112,7 +125,9 @@ struct Backend {
     void receiveSpeaker(uint32_t generation, uint32_t sequence,
                         uint64_t samplePosition, uint16_t flags,
                         const uint8_t *pcm, uint16_t frames) {
-      std::lock_guard<std::mutex> guard(mutex);
+      // Dropping one bounded audio block is preferable to stalling control.
+      std::unique_lock<std::mutex> guard(mutex, std::try_to_lock);
+      if (!guard.owns_lock()) return;
       if (stopped || failed || !speakerOutputReady() || !pcm || frames == 0 ||
           frames > ML_SPEAKER_PCM_MAX_FRAMES || generation == 0 ||
           (flags & ~ML_SPEAKER_PCM_FLAG_DISCONTINUITY) != 0)
@@ -407,6 +422,7 @@ struct WasapiPlayback final : Backend {
         bool active = false;
         bool started = false;
         auto startBy = Clock::now();
+        uint64_t renderedSpeakerOwner = 0;
         uint32_t speakerGeneration = 0;
         uint64_t speakerExpectedPosition = 0;
         bool haveSpeakerPosition = false;
@@ -417,6 +433,16 @@ struct WasapiPlayback final : Backend {
         const HANDLE events[] = {dataEvent, audioEvent};
         std::unique_lock<std::mutex> lock(mutex);
         while (!stopped && !failed) {
+            // Reconnect can rotate a retained endpoint without recreating this
+            // worker. Discard its private FIFO at the next synchronized turn.
+            if (renderedSpeakerOwner != speakerOwnerToken) {
+              renderedSpeakerOwner = speakerOwnerToken;
+              speakerFifo.clear();
+              speakerGeneration = 0;
+              haveSpeakerPosition = false;
+              speakerActive = speakerStarted = false;
+              speakerLastPacket = {};
+            }
             if (!active && !queue.empty()) {
                 // Clear SDL's remembered emulated rumble, as on Bluetooth.
                 lock.unlock();
@@ -638,6 +664,12 @@ bool DualSenseHaptics::playing(unsigned slot) {
     return registry[slot]->playing();
 }
 
+uint64_t DualSenseHaptics::speakerOwner(unsigned slot) {
+  std::lock_guard<std::mutex> lock(registryMutex);
+  if (slot >= registry.size() || !registry[slot]) return 0;
+  return registry[slot]->speakerOwnerToken;
+}
+
 bool DualSenseHaptics::speakerReady(unsigned slot) {
   std::lock_guard<std::mutex> lock(registryMutex);
   if (slot >= registry.size() || !registry[slot])
@@ -649,6 +681,16 @@ void DualSenseHaptics::resetSpeakerGenerationFloor() {
   std::lock_guard<std::mutex> lock(registryMutex);
   speakerGenerationFloor.fill(0);
   speakerGenerationOwner.fill({});
+  // Never reuse an incarnation across reconnect, even if an endpoint survives.
+  for (auto &backend : registry) {
+    if (!backend) continue;
+    std::lock_guard<std::mutex> guard(backend->mutex);
+    backend->speakerOwnerToken = allocateSpeakerOwner(nextSpeakerOwnerToken);
+    backend->speakerQueue.clear();
+    backend->speakerGeneration = 0;
+    backend->haveSpeakerSequence = false;
+    backend->haveSpeakerSamplePosition = false;
+  }
 }
 
 void DualSenseHaptics::receive(uint16_t slot, uint32_t sequence, const uint8_t* pcm, uint16_t frames) {
@@ -658,16 +700,19 @@ void DualSenseHaptics::receive(uint16_t slot, uint32_t sequence, const uint8_t* 
     registry[slot]->receive(sequence, pcm, frames);
 }
 
-void DualSenseHaptics::receiveSpeaker(uint16_t slot, uint32_t generation,
+void DualSenseHaptics::receiveSpeaker(uint16_t slot, uint64_t owner, uint32_t generation,
                                       uint32_t sequence,
                                       uint64_t samplePosition, uint16_t flags,
                                       const uint8_t *pcm, uint16_t frames) {
   if (!pcm || frames == 0 || frames > ML_SPEAKER_PCM_MAX_FRAMES)
     return;
-  std::lock_guard<std::mutex> lock(registryMutex);
+  std::unique_lock<std::mutex> lock(registryMutex, std::try_to_lock);
+  if (!lock.owns_lock()) return;
   if (slot >= registry.size() || !registry[slot])
     return;
+  if (!owner || registry[slot]->speakerOwnerToken != owner) return;
   auto &floor = speakerGenerationFloor[slot];
+  if (speakerGenerationOwner[slot].lock() != registry[slot]) floor = 0;
   if (floor != 0) {
     if (int32_t(generation - floor) < 0)
       return;
@@ -687,6 +732,7 @@ bool DualSenseHaptics::playing(unsigned) { return false; }
 void DualSenseHaptics::receive(uint16_t, uint32_t, const uint8_t*, uint16_t) {}
 bool DualSenseHaptics::speakerReady(unsigned) { return false; }
 void DualSenseHaptics::resetSpeakerGenerationFloor() {}
-void DualSenseHaptics::receiveSpeaker(uint16_t, uint32_t, uint32_t, uint64_t,
+uint64_t DualSenseHaptics::speakerOwner(unsigned) { return 0; }
+void DualSenseHaptics::receiveSpeaker(uint16_t, uint64_t, uint32_t, uint32_t, uint64_t,
                                       uint16_t, const uint8_t *, uint16_t) {}
 #endif
