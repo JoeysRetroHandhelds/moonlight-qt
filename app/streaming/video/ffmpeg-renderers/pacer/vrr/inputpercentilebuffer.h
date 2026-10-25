@@ -102,6 +102,8 @@ public:
     // Revision 13 replaces both means and the band with one target, the
     // smallest buffer whose predicted window hitches fit the allowance
     // (InputCoverageHistory::hitchBudgetBuffer), approached proportionally.
+    // Revision 14 also releases an obsolete seed after unknown-history expiry;
+    // revision 13 retains its original no-budget hold for exact replay.
     void setStableAdaptation(uint64_t revision) {
         m_StableAdaptation = m_Stats.adaptationRevision = revision;
     }
@@ -816,7 +818,8 @@ private:
             m_Stats.hitchRequirementFromMisses = false;
             if (!m_HaveHitchBudget) {
                 m_Stats.tailUncertain = true;
-                m_Stats.targetUs = held;
+                m_Stats.targetUs = m_StableAdaptation >= 14 && m_Stats.expiredUnknown ?
+                    m_Stats.minimumUs : held;
                 return;
             }
             m_Stats.hitchRequirementMeanUs = m_HitchBudgetUs;
@@ -1135,7 +1138,7 @@ private:
         // A rate drop that moves the mapping later leaves the old protection
         // on top of it. Recorded policy 10 drained that at the release law
         // for 25-30 s; policy 11 restores policy 9's T-per-frame drain.
-        if (m_StableAdaptation < 7 && direction < 0 &&
+        if ((m_StableAdaptation < 7 || m_StableAdaptation >= 14) && direction < 0 &&
             (m_HitchMissesOnly == 9 || m_HitchMissesOnly >= 11) && fastLayerDrain()) {
             const uint64_t movement = std::min(m_LayerDrainStepRemainingUs,
                 m_Stats.currentUs - m_Stats.targetUs);
@@ -1149,7 +1152,8 @@ private:
         // Preserve fractional soft rates (e.g. 37.5 us/s). Both products are
         // bounded: elapsed <= 100 ms, rate <= 1e6, factor <= 1e6.
         uint64_t rate = direction > 0 ? m_RiseRate : m_Stats.effectiveFallRateUsPerSecond;
-        if (m_StableAdaptation >= 7 || (m_StableAdaptation >= 5 && direction < 0)) {
+        if ((m_StableAdaptation >= 7 && (m_StableAdaptation < 14 || direction < 0)) ||
+            (m_StableAdaptation >= 5 && direction < 0)) {
             const uint64_t distance = direction > 0 ? m_Stats.targetUs - m_Stats.currentUs :
                 m_Stats.currentUs - m_Stats.targetUs;
             // Proportional release, capped by the established fall rate.

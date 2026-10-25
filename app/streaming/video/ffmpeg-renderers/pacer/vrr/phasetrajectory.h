@@ -63,7 +63,12 @@ public:
             const uint64_t interval = intendedSlot - m_Slot;
             m_Stats.intendedIntervalUs = interval;
             // physicalPeriod bounds the repayment to the available VRR room.
-            const uint64_t previousCarry = m_Anchor > m_CommittedNominal ? m_Anchor - m_CommittedNominal : 0;
+            // A released input buffer moves the nominal target earlier. Drain
+            // against that current basis instead of manufacturing fresh carry
+            // from the change in an intentional scheduling budget.
+            const uint64_t basis = m_DrainFromCurrentNominal ?
+                nominal - std::min(nominal, interval) : m_CommittedNominal;
+            const uint64_t previousCarry = m_Anchor > basis ? m_Anchor - basis : 0;
             const uint64_t drain = m_DrainAtAllowance ? std::min(allowance, previousCarry) :
                 std::min(allowance, std::max(interval * MinimumDrainPerMille / 1000,
                                              previousCarry / DrainCarryDivisor));
@@ -131,7 +136,10 @@ public:
     void noteDeferred() { ++m_Stats.deferred; }
     // Repay up to the whole allowance per successor rather than 1/32 of the
     // carry; still bounded by the panel's fastest refresh.
-    void setDrainAtAllowance(bool enabled) { m_DrainAtAllowance = enabled; }
+    void setDrainAtAllowance(bool enabled, bool currentNominal = false) {
+        m_DrainAtAllowance = enabled;
+        m_DrainFromCurrentNominal = currentNominal;
+    }
     void breakSequence() {
         if (m_HaveAnchor) ++m_Stats.resets;
         m_HaveAnchor = false;
@@ -168,6 +176,6 @@ private:
     // Recent submission lateness; a scheduler property, kept across breaks.
     std::array<uint64_t, 31> m_Lateness{};
     size_t m_LatenessNext = 0, m_LatenessCount = 0;
-    bool m_HaveAnchor = false, m_DrainAtAllowance = false;
+    bool m_HaveAnchor = false, m_DrainAtAllowance = false, m_DrainFromCurrentNominal = false;
 };
 }

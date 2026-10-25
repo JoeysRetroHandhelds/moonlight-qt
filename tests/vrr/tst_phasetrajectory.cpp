@@ -72,6 +72,18 @@ void compressionAndAcceptance() {
     check(late.carryUs>=6690-250-200 && late.carryUs<=6690+200,
         "lateness beyond the usual overshoot is carried, minus one drain step");
 }
+void bufferReleaseDoesNotCreateCarry() {
+    for (bool current : {false, true}) {
+        Vrr13::PhaseTrajectory trajectory;
+        trajectory.setDrainAtAllowance(true, current);
+        trajectory.plan(1, 100000, 101000, 101000, 101000, 8333, 0, 500, 10000, true);
+        trajectory.commit(1, 100000, 101000, 101000, true, false, true);
+        const auto next = trajectory.plan(2, 110000, 110999, 110999, 110999,
+            8333, 0, 500, 10000, true);
+        check(next.carryUs == (current ? 0u : 1u) && next.targetUs >= 109333,
+            "one-microsecond buffer release stays outside recovery while recorded policy retains its carry");
+    }
+}
 void carryRepaymentKnobs() {
     // 6690us carry before a 9719us intended successor, 750us allowance.
     const auto planWith=[](uint64_t limit) {
@@ -356,4 +368,4 @@ void actualControllerAndInputIsolation() {
     late.reset();check(late.trajectoryStats().plans==0,"controller full reset clears trajectory model");
 }
 }
-int main() {extraDelayDoesNotChaseCurrentReadiness();carryRepaymentKnobs();decodeCompletionEstimate();legacyRecoveryCannotSustainCarry();asyncDecodeCompletionPlanning();compressionAndAcceptance();resyncAndLifecycle();preparedSuccessorProof();sourceMappingFactorial();actualCadenceChangeQualification();actualControllerAndInputIsolation();std::fprintf(stderr,"phase trajectory integration: %s (%d failures)\n",failures?"FAIL":"PASS",failures);return failures?1:0;}
+int main() {extraDelayDoesNotChaseCurrentReadiness();bufferReleaseDoesNotCreateCarry();carryRepaymentKnobs();decodeCompletionEstimate();legacyRecoveryCannotSustainCarry();asyncDecodeCompletionPlanning();compressionAndAcceptance();resyncAndLifecycle();preparedSuccessorProof();sourceMappingFactorial();actualCadenceChangeQualification();actualControllerAndInputIsolation();std::fprintf(stderr,"phase trajectory integration: %s (%d failures)\n",failures?"FAIL":"PASS",failures);return failures?1:0;}

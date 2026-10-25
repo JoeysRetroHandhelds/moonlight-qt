@@ -968,6 +968,8 @@ private:
     // backlog. Policy 11 keeps the recent typical handoff in readiness.
     uint64_t inputDecoderBacklogUs(const PacedFrame& frame);
     std::deque<uint64_t> m_DecoderQueueHistory;
+    uint64_t m_DecoderQueueBaselineUs = 0;
+    bool m_HaveDecoderQueueBaseline = false;
     // Exact GPU decode durations (decoder output -> completion) from frames
     // the worker blocked on; their median estimates unobserved completions.
     std::array<uint64_t, 64> m_DecodeGpuSamples {};

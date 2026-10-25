@@ -103,6 +103,28 @@ void testContinuousCoverage() {
     check(stats.recentEligible==0,"coverage becomes unavailable when all real observations expire");
 }
 
+void testProjectedHitchBudgetCoordinates() {
+    Vrr13::InputCoverageHistory history;
+    for (uint64_t frame = 1; frame <= 100; ++frame)
+        history.observe(1000000 + frame * 1000, 10000000, true, false, true,
+            5000, 5500, 500, 10000, true);
+    uint64_t legacy = 0, projected = 0;
+    check(history.hitchBudgetBuffer(995000, legacy) && legacy == 5000 &&
+          history.hitchBudgetBuffer(995000, projected, 10000, true) && projected == legacy,
+        "projected history preserves the requirement in its original mapping coordinate");
+    check(history.hitchBudgetBuffer(995000, projected, 12000, true) && projected == 3000,
+        "mapping movement retires the matching amount of old buffer demand");
+    check(history.hitchBudgetBuffer(995000, legacy) && legacy == 5000,
+        "recorded hitch budgets retain their original unprojected arithmetic");
+    Vrr13::InputCoverageHistory negative;
+    negative.observe(1000000, 10000000, true, false, false, 0, -500, 500, 10000, true);
+    check(negative.hitchBudgetBuffer(995000, projected, 10000, true) && projected == 0 &&
+          negative.hitchBudgetBuffer(995000, projected, 8000, true) && projected == 1000,
+        "signed needs below zero survive a later move to an earlier mapping");
+    negative.advance(11000000, 10000000);
+    check(!negative.hitchBudgetBuffer(995000, projected, 8000, true),
+        "projected requirement expiry follows its original outcome exactly");
+}
 void testResponsiveCoverageReporting() {
     Vrr13::InputCoverageHistory history;
     InputPercentileBuffer::Stats stats;
@@ -1627,6 +1649,33 @@ void testActualControllerInputMissReleaseFeedbackApi() {
     check(experimental.intervalStats().inputPercentile.holdUntilUs==0 && experimental.intervalStats().inputPercentile.cumulativeNetworkMisses==0,
         "actual full controller reset clears input diagnostics");
 }
+void testHitchBudgetUnknownHistoryExpiry() {
+    for (const uint64_t revision : {13, 14}) {
+        InputPercentileBuffer buffer;
+        buffer.reset(6000);
+        buffer.setStableAdaptation(revision);
+        buffer.setHitchBudgetBuffer(false, 0);
+        for (uint64_t frame = 1; frame <= 6000; ++frame) {
+            const uint64_t at = 1000000 + frame * 10000;
+            buffer.observe(frame, at, at, 0, false,
+                1000, 6000, 995000, 10000000, 1000, 250, 0, 500);
+            const auto stats = buffer.stats();
+            if (frame < 1001)
+                check(!stats.expiredUnknown && stats.currentUs == 6000,
+                    "no-budget seed stays protected throughout the selected history");
+        }
+        const auto stats = buffer.stats();
+        check(stats.expiredUnknown && !stats.evidenceValid && stats.tailUncertain &&
+              stats.eligible == 0 && stats.ineligible == stats.observed,
+            "unknown-history release cannot invent eligible evidence or a hitch budget");
+        if (revision == 13)
+            check(stats.currentUs == 6000 && stats.unknownRelease == 0,
+                "recorded revision 13 retains its original no-budget hold");
+        else
+            check(stats.targetUs == 1000 && stats.currentUs == 1000 && stats.unknownRelease > 0,
+                "current policy releases an expired seed through the bounded fall slew");
+    }
+}
 void testActualControllerRepeatedZeroTimestampDrops() {
     VrrSessionConfig session;session.streamRateHz=60;session.displayRefreshHz=120;
     session.smoothFrameTiming=false;session.experimentalInputPercentilePpm=990000;
@@ -1655,13 +1704,13 @@ void testActualControllerRepeatedZeroTimestampDrops() {
     check(stats.expiredUnknown && stats.currentUs==stats.minimumUs && stats.unknownRelease>0 && stats.epochResets>50,
         "repeated zero-timestamp drops and phase resets release obsolete seed after history expiry and fall slew");
 }
-void testActualControllerRequiresAnInputHitch() {
+void testHistoricalControllerRequiresAnInputHitch() {
     for(const int seconds:{10,37,60,120,300}) {
         for(const int target:{9900,9950,9999}) {
             VrrSessionConfig settings;settings.experimentalInputPercentilePpm=1;
             settings.timingOptions={1000,target,seconds,500};
             const auto configured=vrrTimingParametersForSession(settings);
-            check(configured.playoutInputStableAdaptation==7 &&
+            check(configured.playoutInputStableAdaptation==14 &&
                   configured.playoutInputPercentileWindowUs==uint64_t(seconds)*1000000 &&
                   configured.playoutInputPercentileTargetPerMillion==uint64_t(target)*100,
                 "production rolling estimator receives the user's custom history and smoothness settings");
@@ -1671,7 +1720,10 @@ void testActualControllerRequiresAnInputHitch() {
     session.latencyMode=1;session.smoothFrameTiming=false;session.experimentalInputPercentilePpm=1;
     session.timingOptions={1000,9950,10,500};
     auto base=vrrTimingParametersForSession(session);
-    check(base.playoutInputHitchMissesOnly==11 && base.playoutInputStableAdaptation==7,"production keeps preventable-miss scoring with stable target adaptation");
+    check(base.playoutInputHitchMissesOnly==11 && base.playoutInputStableAdaptation==14,"production keeps preventable-miss scoring with stable target adaptation");
+    // This fixture guards revision 7's hitch-only growth law. Revision 13
+    // deliberately sizes from all eligible needs with a breakthrough floor.
+    base.playoutInputStableAdaptation=7;
     base.playoutDelayStartSeedUs=1000;base.playoutDelayMinimumUs=1000;base.playoutDelayMaximumUs=6000;
     base.playoutDelayMaximumPeriodPerMille=base.playoutDelayCapSourcePeriodPerMille=0;
     base.playoutInputLearningTrim=0;
@@ -1851,7 +1903,7 @@ void testExactWindowBulkExpiry() {
 
 int main() {
     testExactWindowBulkExpiry();
-    testFastLayerCadence();testConfirmedLayerCadence();testContinuousCoverage();testResponsiveCoverageReporting();
+    testFastLayerCadence();testConfirmedLayerCadence();testContinuousCoverage();testProjectedHitchBudgetCoordinates();testResponsiveCoverageReporting();
     testGradualLayerGrowthAndHealthyRelease();
     testFeedbackBoundedRelease();
     testAsymmetricLayerBufferMovement();
@@ -1886,9 +1938,10 @@ int main() {
     testOrdinaryVariationKeepsLayer();
     testRateBaselineStepIsNotClockDrift();
     testActualControllerInputMissReleaseFeedbackApi();
+    testHitchBudgetUnknownHistoryExpiry();
     testActualControllerRepeatedZeroTimestampDrops();
     testActualControllerPostInputErrorsCannotInflateBuffer();
-    testActualControllerRequiresAnInputHitch();
+    testHistoricalControllerRequiresAnInputHitch();
 #endif
     std::fprintf(stderr,"input percentile lifecycle integration tests: %s (%d failures)\n",failures?"FAIL":"PASS",failures);
     return failures?1:0;

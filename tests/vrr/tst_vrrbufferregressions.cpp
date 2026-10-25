@@ -789,7 +789,7 @@ void testDisplayCeilingShedsStandingPhase()
         const auto session = vrrProductionSession(preset.mode, 120, 120, smoothing.smooth, smoothing.absorb);
         const uint64_t tolerance = uint64_t(session.timingOptions.toleranceUs);
         const uint64_t budget = !smoothing.smooth ? 0 : smoothing.absorb ? 2 * tolerance : tolerance;
-        const size_t total = 60 * 120, settledFrom = 40 * 120;
+        const size_t total = 90 * 120, settledFrom = 70 * 120;
         constexpr uint64_t kLateUs = 4000, kJitterUs = 400, kRefreshUs = 8333;
         // One late frame every 5 s adds carry that running faster cannot repay.
         const auto run = [&](uint64_t seedUs) {
@@ -827,7 +827,19 @@ void testDisplayCeilingShedsStandingPhase()
         // a refresh cost none. A presenter that cannot latch must stay a guard
         // above the previous present, so at exactly its maximum refresh it
         // cannot show every frame; bound it to 4 per second.
-        const size_t allowed = t_CanLatch ? size_t((start + kRefreshUs - 1) / kRefreshUs) + 2 : total / 30;
+        // A replacement cannot reclaim a whole refresh while the intentional
+        // input buffer fills that time again. Bound startup using the standing
+        // phase threshold beyond the retained retiming budget, less the known
+        // source jitter; then require no replacements after cold release.
+        constexpr uint64_t kSourceDisplacementUs = 1000;
+        const uint64_t shedCredit = tolerance + kSourceDisplacementUs - kJitterUs;
+        const uint64_t releasable = start - std::min(start, floorBuffer);
+        const size_t allowed = t_CanLatch ? size_t((releasable + shedCredit - 1) / shedCredit) + 1 : total / 30;
+        const double coldReleaseSeconds = double(releasable) / double(cold->fallUsPerSecond()) +
+            3.0 * double(cold->releaseTauUs()) / 1e6 + 5.0;
+        const size_t coldReleaseEnd = std::min(total, size_t(coldReleaseSeconds * 120) + 1);
+        const size_t settledReplacements = size_t(std::count_if(f.begin() + coldReleaseEnd, f.end(),
+            [](const Frame& frame) { return frame.dropped; }));
         report("%-52s start %5" PRIu64 " retiming p50 planned %4" PRIu64 " shown %4" PRIu64 " (kept %4" PRIu64 ") latency %5" PRIu64 " (floor start %5" PRIu64 ") replacements %zu (allowed %zu)\n",
             name.c_str(), start, plannedP50, shownP50, kept, coldLatency, floorLatency, cold->replacements(), allowed);
         check(plannedP50 <= kept + tolerance + 50, name, "planned retiming at the display ceiling stays inside its budget",
@@ -844,7 +856,10 @@ void testDisplayCeilingShedsStandingPhase()
             "latency %" PRIu64 " us from a floor start with a %" PRIu64 " us buffer, %" PRIu64 " us budget and %" PRIu64
             " us late-frame phase", floorLatency, floorBuffer, budget, forced);
         check(cold->replacements() <= allowed, name, "late frames under a refresh cost no replacement at the ceiling",
-            "%zu replacements in 60 s; allowed %zu for the starting delay", cold->replacements(), allowed);
+            "%zu replacements in 90 s; allowed %zu for the starting delay", cold->replacements(), allowed);
+        if (t_CanLatch)
+            check(settledReplacements == 0, name, "recurring late frames cost no replacements after the cold release bound",
+                "%zu replacements after %.1f seconds", settledReplacements, coldReleaseSeconds);
     }
 }
 
@@ -950,15 +965,23 @@ struct LateInput {
 // phase every late frame forced with a skip, 12 a minute at one 4 ms late
 // frame per 5 s where fixed refresh showed none. Its vsync phase is
 // arbitrary, so it is scored as the mean over 16 phases.
-void versusFixedRefresh(const char* scenario, const std::vector<LateInput>& inputs)
+void versusFixedRefresh(const char* scenario, const std::vector<LateInput>& inputs,
+                        bool comparableBudget = true)
 {
     // Score the last minute: a cold start's release settles in the first,
     // and display-ceiling bounds what that release may cost.
     constexpr size_t kTotal = 120 * 120, kFrom = 60 * 120;
     constexpr int kPhases = 16;
     for (const auto& input : inputs) for (const auto& preset : kPresets) for (const auto& smoothing : kSmoothing) {
-        const std::string name = label(scenario, preset, smoothing) + "/" + input.name;
-        const auto session = vrrProductionSession(preset.mode, 120, 120, smoothing.smooth, smoothing.absorb);
+        if (!comparableBudget && preset.mode != 0) continue;
+        const std::string name = label(scenario, preset, smoothing) + "/" + input.name +
+            (comparableBudget ? "/common-budget" : "/default-four-frame");
+        auto session = vrrProductionSession(preset.mode, 120, 120, smoothing.smooth, smoothing.absorb);
+        // Compare latency with at most the fixed pacer's one-frame delivery
+        // budget. Smooth's default four-frame budget deliberately trades more
+        // latency for fewer disturbances; exercise that separately below.
+        if (comparableBudget)
+            session.timingOptions.bufferPerMille = std::min(session.timingOptions.bufferPerMille, 1000);
         Stream stream(session);
         Rng rng(211 + uint64_t(preset.mode));
         for (size_t i = 0; i < kTotal; ++i) stream.step(750, input.make(i, rng));
@@ -984,8 +1007,15 @@ void versusFixedRefresh(const char* scenario, const std::vector<LateInput>& inpu
         // event count; the screen still froze for the whole step.
         check(vrr.worstGapUs <= fixedWorstGap + 8334, name, "no freeze longer than fixed refresh's worst hold plus a refresh",
             "%" PRIu64 " us without a new frame; fixed refresh %" PRIu64 " us", vrr.worstGapUs, fixedWorstGap);
-        check(double(vrr.meanLatencyUs) < fixedLatency, name, "less latency than fixed refresh at the display ceiling",
-            "mean latency %" PRIu64 " us; fixed refresh %.0f us", vrr.meanLatencyUs, fixedLatency);
+        if (comparableBudget)
+            check(double(vrr.meanLatencyUs) < fixedLatency, name, "less latency than fixed refresh at the display ceiling",
+                "mean latency %" PRIu64 " us; fixed refresh %.0f us", vrr.meanLatencyUs, fixedLatency);
+        else {
+            const uint64_t selectedBudgetUs = uint64_t(session.timingOptions.bufferPerMille) * 8333 / 1000;
+            check(vrr.meanLatencyUs <= selectedBudgetUs + kBaseLatencyUs + 100 + stream.toleranceUs(),
+                name, "default Smooth latency remains within its selected four-frame delivery budget",
+                "mean latency %" PRIu64 " us; selected buffer budget %" PRIu64 " us", vrr.meanLatencyUs, selectedBudgetUs);
+        }
         if (input.sustainedUs)
             check(vrr.worstStepUs <= input.sustainedUs + 8333, name, "a latency step stalls for at most the step plus a refresh",
                 "worst presented step %" PRIu64 " us for a %" PRIu64 " us step; fixed refresh %" PRIu64 " us",
@@ -1011,7 +1041,7 @@ void testVersusFixedRefreshLateFrames()
 
 void testVersusFixedRefreshStalls()
 {
-    versusFixedRefresh("versus-fixed-refresh-stall", {
+    const std::vector<LateInput> inputs = {
         // A 25 ms network stall every 10 s delivers three frames together.
         {"stall-25ms", [](size_t i, Rng& rng) {
             const size_t k = i % 1200;
@@ -1037,7 +1067,9 @@ void testVersusFixedRefreshStalls()
             input.successorLatenessUs = lateness(i + 1);
             return input;
         }, 28300},
-    });
+    };
+    versusFixedRefresh("versus-fixed-refresh-stall", inputs);
+    versusFixedRefresh("versus-fixed-refresh-stall", inputs, false);
 }
 
 // The live policy on a recorded arrival timeline, through the same worker

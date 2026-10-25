@@ -78,6 +78,7 @@ VrrTimingParameters revision5Policy(const VrrSessionConfig& session, bool synchr
     auto p = vrrTimingParametersForSession(session, synchronized, scheduled);
     // This recording predates stable adaptation. Do not inherit today's
     // rolling input-buffer policy into its historical reserve assertions.
+    p.playoutCeilingPhaseReplacement = 0;
     p.playoutInputStableAdaptation = 0;
     p.playoutInputHitchMissesOnly = 0;
     if (p.playoutInputPercentileEnabled) p.playoutInputBoundedRecoveryCredit = 1;
@@ -766,6 +767,15 @@ BufferContractResult bufferDisturbance(BufferDisturbance disturbance, bool sched
     auto policy = vrrTimingParametersForSession(session, scheduled, scheduled);
     policy.playoutDelayStartSeedUs = seed;
     VrrTimingController controller(session, true, policy);
+    // Smooth's cold seed can need ~65 s at the selected 250 us/s
+    // release law plus its 10 s proportional time constant.
+    // Inject finite faults only after that independent startup bound, so a
+    // still-releasing seed is not mislabeled as steady disturbance recovery.
+    constexpr int kWarmupFrames = 9600;
+    constexpr int kFaultFrame = 11000;
+    constexpr int kRateReturnFrame = 12200;
+    constexpr int kFinalWindowFrame = 14000;
+    constexpr int kTotalFrames = 16000;
     BufferContractResult result;
     std::vector<uint64_t> latency;
     // Cross uint32 RTP rollover while the source clock remains monotonic.
@@ -774,27 +784,27 @@ BufferContractResult bufferDisturbance(BufferDisturbance disturbance, bool sched
     uint32_t random = 0x74ad39b1;
     unsigned lateRun = 0;
     const uint64_t intentBudget = smoothing ? uint64_t(tolerance) * (absorb ? 2 : 1) : 0;
-    for (int i = 0; i < 12000; ++i) {
-        const bool lowerRate = disturbance == BufferDisturbance::RateTransition && i >= 3000 && i < 4200;
+    for (int i = 0; i < kTotalFrames; ++i) {
+        const bool lowerRate = disturbance == BufferDisturbance::RateTransition && i >= kFaultFrame && i < kRateReturnFrame;
         const int sourceFps = lowerRate ? 60 : fps;
         // Rational increments avoid a permanently slow 116 FPS test clock.
         const uint64_t grid = uint64_t(i + 1) * 90000 / sourceFps;
-        sourceTicks += lowerRate || (disturbance == BufferDisturbance::RateTransition && i == 4200) ?
+        sourceTicks += lowerRate || (disturbance == BufferDisturbance::RateTransition && i == kRateReturnFrame) ?
             uint64_t(90000 / sourceFps) : grid - priorGrid;
         priorGrid = grid;
-        if (disturbance == BufferDisturbance::SourcePause && i == 3500) sourceTicks += 4500;
+        if (disturbance == BufferDisturbance::SourcePause && i == kFaultFrame) sourceTicks += 4500;
         random ^= random << 13; random ^= random >> 17; random ^= random << 5;
         const uint64_t displacement = disturbance == BufferDisturbance::RandomJitter ? (random % 3) * 45 : 0;
         const uint64_t ticks = sourceTicks + displacement;
         const uint64_t source = 1000000 + ticks * 100 / 9;
         const uint64_t drift = disturbance == BufferDisturbance::ClockDrift ? uint64_t(i) * 2 : 0;
         const uint64_t burst = disturbance == BufferDisturbance::DeliveryBurst &&
-            i >= 3500 && i < 3503 ? 3000 : 0;
+            i >= kFaultFrame && i < kFaultFrame + 3 ? 3000 : 0;
         const uint64_t ready = source + drift + 1500 + burst;
-        const bool timestampValid = disturbance != BufferDisturbance::TimestampBreak || i < 3500 || i >= 3503;
+        const bool timestampValid = disturbance != BufferDisturbance::TimestampBreak || i < kFaultFrame || i >= kFaultFrame + 3;
         PacedFrame frame(nullptr, i, uint32_t(ticks), timestampValid, ready);
         frame.setDeliveryTimeline(source + drift + 200, source + drift + 400, source + drift + 500);
-        if (disturbance == BufferDisturbance::TimestampBreak && i == 3500) controller.rebase();
+        if (disturbance == BufferDisturbance::TimestampBreak && i == kFaultFrame) controller.rebase();
         const uint64_t now = scheduled ? ready : std::max(ready, accepted);
         const auto d = controller.schedule(frame, now);
         result.readinessViolations += d.targetUs < ready;
@@ -812,8 +822,8 @@ BufferContractResult bufferDisturbance(BufferDisturbance disturbance, bool sched
         }
         if (d.trajectory.resyncRecommended) {
             ++result.replacements;
-            result.settledReplacements += i >= 10000;
-            result.pauseReplacements += disturbance == BufferDisturbance::SourcePause && i == 3500;
+            result.settledReplacements += i >= kFinalWindowFrame;
+            result.pauseReplacements += disturbance == BufferDisturbance::SourcePause && i == kFaultFrame;
             result.timestampReplacements += !timestampValid;
             controller.noteTrajectoryResyncDrop();
             controller.noteSubmission(false, false, 0);
@@ -823,16 +833,16 @@ BufferContractResult bufferDisturbance(BufferDisturbance disturbance, bool sched
             result.spacingViolations += d.targetUs < accepted + controller.displayPeriodUs();
         const uint64_t enqueue = scheduled ? std::max(now + 500, d.targetUs - 1000) : d.targetUs + 80;
         const uint64_t submissionDelay = disturbance == BufferDisturbance::SubmissionBurst &&
-            i >= 3500 && i < 3503 ? 3000 : 0;
+            i >= kFaultFrame && i < kFaultFrame + 3 ? 3000 : 0;
         accepted = (scheduled ? std::max(enqueue, d.targetUs) : enqueue) + submissionDelay;
         result.peakLatency = std::max(result.peakLatency, accepted - ready);
-        if (i >= 3000) {
+        if (i >= kWarmupFrames) {
             lateRun = accepted - ready >= 6000 ? lateRun + 1 : 0;
             if (lateRun == 1) lateRunStartUs = ready;
             if (lateRun) result.lateRunUs = std::max(result.lateRunUs, ready - lateRunStartUs);
             result.longestLateRun = std::max(result.longestLateRun, lateRun);
         }
-        if (i >= 10000) {
+        if (i >= kFinalWindowFrame) {
             latency.push_back(accepted - ready);
             result.maxBudget = std::max(result.maxBudget, d.plannedExtraDelayUs());
             result.combinedBudget = std::max(result.combinedBudget, d.playoutDelayUs + d.plannedExtraDelayUs());

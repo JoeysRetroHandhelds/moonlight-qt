@@ -49,7 +49,9 @@ public:
         while (!m_ReportingIneligible.empty() && nowUs - m_ReportingIneligible.front() >= m_ReportingWindowUs)
             m_ReportingIneligible.pop_front();
     }
-    void observe(uint64_t nowUs, uint64_t windowUs, bool eligible, bool absorbed, bool missed, uint64_t requiredProtectionUs = 0) {
+    void observe(uint64_t nowUs, uint64_t windowUs, bool eligible, bool absorbed, bool missed, uint64_t requiredProtectionUs = 0,
+                 int64_t requiredUs = 0, uint64_t toleranceUs = 0,
+                 int64_t clockOffsetUs = 0, bool projectedNeeds = false) {
         if (!nowUs || nowUs < m_LastUs) return;
         advance(nowUs, windowUs);
         if (!eligible) {
@@ -61,7 +63,11 @@ public:
             return;
         }
         const uint64_t required = absorbed || missed ? requiredProtectionUs : 0;
-        m_Outcomes.push_back({nowUs, absorbed, missed, required, requiredProtectionUs});
+        const int64_t normalizedNeedUs = projectedNeeds ? addCoordinate(
+            addCoordinate(requiredUs, -int64_t(std::min<uint64_t>(toleranceUs, INT64_MAX))), clockOffsetUs) : 0;
+        m_Outcomes.push_back({nowUs, absorbed, missed, required, requiredProtectionUs,
+                             normalizedNeedUs, projectedNeeds});
+        if (projectedNeeds) m_ProjectedNeeds.add(normalizedNeedUs);
         if (requiredProtectionUs) {
             m_Needs.add(int64_t(std::min<uint64_t>(requiredProtectionUs, INT64_MAX)));
             m_Breaches += !absorbed;
@@ -102,7 +108,8 @@ public:
     // (VRR room hides some) scales that count to hitches. The estimate does
     // not depend on the applied buffer, so it moves only as evidence ages.
     // Returns false while the window holds no eligible outcome.
-    bool hitchBudgetBuffer(uint64_t probabilityPpm, uint64_t& bufferUs) const {
+    bool hitchBudgetBuffer(uint64_t probabilityPpm, uint64_t& bufferUs,
+                           int64_t clockOffsetUs = 0, bool projectedNeeds = false) const {
         const uint64_t samples = eligible();
         if (!samples) return false;
         const uint64_t tail = 1000000 - std::clamp<uint64_t>(probabilityPpm, 1, 999999);
@@ -111,7 +118,15 @@ public:
         const double perBreach = m_Breaches >= 10 ?
             std::max(0.05, double(m_Missed) / double(m_Breaches)) : 1.0;
         const size_t breaches = size_t(budget / perBreach);
-        bufferUs = breaches >= m_Needs.size() ? 0 :
+        if (projectedNeeds) {
+            // Revision 14 retains signed needs in the drift-corrected producer
+            // coordinate. Mapping movement changes their present buffer cost;
+            // a past fast-rate need cannot stay as delay atop a later mapping.
+            if (m_ProjectedNeeds.size() != samples) return false;
+            bufferUs = breaches >= samples ? 0 : uint64_t(std::max<int64_t>(0,
+                subtractCoordinate(m_ProjectedNeeds.atRank(samples - breaches), clockOffsetUs)));
+        }
+        else bufferUs = breaches >= m_Needs.size() ? 0 :
             uint64_t(std::max<int64_t>(0, m_Needs.atRank(m_Needs.size() - breaches)));
         return true;
     }
@@ -136,7 +151,21 @@ public:
         }
     }
 private:
-    struct Outcome { uint64_t atUs; bool absorbed, missed; uint64_t requiredUs = 0, needUs = 0; };
+    static int64_t addCoordinate(int64_t value, int64_t delta) {
+        if (delta > 0 && value > INT64_MAX - delta) return INT64_MAX;
+        if (delta < 0 && value < INT64_MIN - delta) return INT64_MIN;
+        return value + delta;
+    }
+    static int64_t subtractCoordinate(int64_t value, int64_t coordinate) {
+        if (coordinate > 0 && value < INT64_MIN + coordinate) return INT64_MIN;
+        if (coordinate < 0 && value > INT64_MAX + coordinate) return INT64_MAX;
+        return value - coordinate;
+    }
+    struct Outcome {
+        uint64_t atUs; bool absorbed, missed; uint64_t requiredUs = 0, needUs = 0;
+        int64_t normalizedNeedUs = 0;
+        bool projectedNeeds = false;
+    };
     struct Recent { uint64_t atUs; bool missed; };
     void classifyLostCause(uint64_t nowUs, bool missed) {
         m_Recent.push_back({nowUs, missed});
@@ -159,6 +188,7 @@ private:
     }
     void pop(std::deque<Outcome>& outcomes) {
         const Outcome& front = outcomes.front();
+        if (front.projectedNeeds) m_ProjectedNeeds.remove(front.normalizedNeedUs);
         m_Absorbed -= front.absorbed;
         m_Missed -= front.missed;
         if (front.needUs) {
@@ -192,7 +222,7 @@ private:
     uint64_t m_HitchRequiredSamples = 0, m_DisturbanceRequiredSamples = 0;
     // Every eligible outcome's needed protection (nonzero only), and how
     // many of those exceeded the buffer applied at the time.
-    ExactRollingQuantile m_Needs;
+    ExactRollingQuantile m_Needs, m_ProjectedNeeds;
     uint64_t m_Breaches = 0;
 };
 }

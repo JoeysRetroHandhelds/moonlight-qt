@@ -1,3 +1,39 @@
+Input lifecycle and requirement coordinates (2026-10-25,
+`playout_input_stable_adaptation=14`): revision 13 held seeded protection when
+no hitch-budget estimate existed, even after history expiry. Revision 14 keeps
+the pre-expiry hold and then releases the obsolete seed through the existing
+bounded slew. Growth uses the documented normal rise rate; proportional
+slowing applies to release, rather than prolonging newly proven misses.
+
+With a validated normalized producer mapping, the decoder handoff baseline is
+the smallest qualified median. Later queue growth cannot become a new handoff
+cost and manufacture upstream lateness (up to 12 ms in the mapping factorial).
+The steady measured handoff remains covered; raw mappings retain policy 11's
+rolling median. A connection that begins with sustained backlog has no timing
+proof distinguishing that backlog from a steady handoff, so this baseline is
+still an estimate rather than independent stage instrumentation.
+
+The hitch-budget history retains signed requirements in the continuous,
+drift-corrected producer coordinate and projects them into the current mapping
+at query time. A later source mapping no longer leaves an old fast-rate need
+as added buffer delay. Rate-drop release restores the existing tolerance-bounded
+per-fresh-frame drain while the mapping settles. Revision 13 and earlier keep
+their original arithmetic for exact replay.
+
+Revision 14 also qualifies and renews ceiling protection whenever the current
+frame's readiness proves it late. Requiring another phase increase failed to
+renew equally late recurring frames, or to qualify a first late frame while
+cold-start phase was already higher. The trajectory repays carry against the
+current nominal target, so a one-microsecond buffer release does not create
+one microsecond of fresh recovery. Earlier revisions retain their old bases.
+
+Known short-send frames no longer establish the full-frame source-mapping
+minimum under revision 14: normalizing their last-packet span still leaves an
+earlier first packet, which otherwise moves the minimum ahead of later full
+frames. First-frame initialization remains valid, and a sustained smaller
+scene becomes typical through the existing 64-frame span window. Physical
+receive-clock observations are unchanged.
+
 Hitch-budget target (2026-10-22, `playout_input_stable_adaptation=13`):
 revisions 8--12 drive the buffer toward one of two means, the breakthrough
 hitch mean when failing and the all-disturbance mean when met, gated in

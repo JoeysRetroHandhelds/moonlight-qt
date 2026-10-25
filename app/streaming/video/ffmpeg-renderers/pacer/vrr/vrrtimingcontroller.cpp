@@ -226,7 +226,7 @@ VrrTimingParameters vrrTimingParametersForSession(
     // smaller layer. Draining at the release law kept a rate drop's moved
     // mapping as several ms of excess latency for 25-30 s (f96b0524).
     parameters.playoutInputHitchMissesOnly = parameters.playoutInputPercentileEnabled ? 11 : 0;
-    parameters.playoutInputStableAdaptation = parameters.playoutInputPercentileEnabled ? 13 : 0;
+    parameters.playoutInputStableAdaptation = parameters.playoutInputPercentileEnabled ? 14 : 0;
     // Record lifecycle semantics explicitly; missing fields in older captures
     // retain their historical eviction and reacquisition behavior.
     parameters.playoutInputLayerLifecycle = parameters.playoutInputPercentileEnabled ? 2 : 0;
@@ -533,6 +533,8 @@ void VrrTimingController::reset()
     m_PhaseErrorFrames = 0;
     // The decoder handoff is a client property; a source rebase keeps it.
     m_DecoderQueueHistory.clear();
+    m_DecoderQueueBaselineUs = 0;
+    m_HaveDecoderQueueBaseline = false;
     clearTimeline(false);
 }
 
@@ -932,9 +934,9 @@ VrrTimingDecision VrrTimingController::schedule(const PacedFrame& frame,
                                           m_Parameters.presentationSafetyUs);
     if (timestampPlayout) {
         const uint64_t mappingUs = sourceMappingUs(frame);
-        const int64_t offsetUs = signedDifference(mappingUs,
-                                                  rtpUs) +
-            int64_t(m_Parameters.playoutOffsetSendSpanNormalization ? sendSpanCorrectionUs(frame) : 0);
+        const uint64_t sendSpanCorrection = m_Parameters.playoutOffsetSendSpanNormalization ?
+            sendSpanCorrectionUs(frame) : 0;
+        const int64_t offsetUs = signedDifference(mappingUs, rtpUs) + int64_t(sendSpanCorrection);
         const bool timeBasedOffset =
             m_Parameters.playoutOffsetSlewUsPerSecond != 0;
         const uint64_t offsetClockUs = timeBasedOffset ?
@@ -947,7 +949,12 @@ VrrTimingDecision VrrTimingController::schedule(const PacedFrame& frame,
         m_ReceiveDriftPacketOffsetUs = signedDifference(frame.receiveUs(), rtpUs);
         const int64_t appliedOffsetUs = observePlayoutOffset(
             offsetClockUs,
-            offsetUs, rebased || cadence.eligible, cadence.phaseDiscontinuity);
+            // A known short frame can begin early as well as finish early.
+            // It cannot establish the full-frame mapping minimum. A sustained
+            // scene change becomes typical in the existing span window.
+            offsetUs, rebased || (cadence.eligible &&
+                (m_Parameters.playoutInputStableAdaptation < 14 || sendSpanCorrection == 0)),
+            cadence.phaseDiscontinuity);
         anchorSourceTime(addSigned(rtpUs, appliedOffsetUs));
         readyOffsetUs = signedDifference(sourceMappingUs(frame),
                                          m_SourceTimeUs);
@@ -1354,7 +1361,8 @@ VrrTimingDecision VrrTimingController::schedule(const PacedFrame& frame,
             // or where it actually went when genuinely late.
             ownershipFloor = saturatingAdd(m_PhaseTrajectory.anchorUs(), m_DisplayPeriodUs);
         }
-        m_PhaseTrajectory.setDrainAtAllowance(m_Parameters.playoutCeilingPhaseReplacement >= 3);
+        m_PhaseTrajectory.setDrainAtAllowance(m_Parameters.playoutCeilingPhaseReplacement >= 3,
+            m_Parameters.playoutInputStableAdaptation >= 14);
         trajectory = m_PhaseTrajectory.plan(uint64_t(frame.frameNumber()),
             addSigned(m_SourceTimeUs, smoothingUs), originalTargetUs, targetUs,
             saturatingAdd(nowUs, saturatingAdd(renderOffsetUs, m_Parameters.presentationSafetyUs)),
@@ -1662,8 +1670,11 @@ VrrTimingDecision VrrTimingController::schedule(const PacedFrame& frame,
             // a faster source clock) is not, nor a step from jittered source
             // stamps or a presenter's guard spacing: earning those let native
             // scheduled presentation hold 6.8 ms under 1 ms stamp jitter.
+            // Revision 14 qualifies/renews from that proven late readiness
+            // even if cold-start or previously earned phase is already higher.
             else if (m_CeilingLastPhaseValid && physicalUs - removableUs > kSourceDisplacementUs &&
-                    physicalUs > saturatingAdd(m_CeilingLastPhaseUs, kSourceDisplacementUs)) {
+                    (physicalUs > saturatingAdd(m_CeilingLastPhaseUs, kSourceDisplacementUs) ||
+                     (m_Parameters.playoutInputStableAdaptation >= 14))) {
                 m_CeilingEarnedPhaseUs = std::max(m_CeilingEarnedPhaseUs, std::min(physicalUs, m_DisplayPeriodUs));
                 m_CeilingEarnedPeakUs = m_CeilingEarnedPhaseUs;
                 m_CeilingEarnedAtUs = nowUs;
@@ -2970,7 +2981,8 @@ void VrrTimingController::noteSubmission(bool submitted, bool cancelled,
                 {
                     uint64_t hitchBudgetUs = 0;
                     const bool hitchBudget = m_InputCoverageHistory.hitchBudgetBuffer(
-                        m_Parameters.playoutInputPercentileTargetPerMillion, hitchBudgetUs);
+                        m_Parameters.playoutInputPercentileTargetPerMillion, hitchBudgetUs,
+                        m_Pending.inputClockOffsetUs, m_Parameters.playoutInputStableAdaptation >= 14);
                     m_InputPercentileBuffer.setHitchBudgetBuffer(hitchBudget, hitchBudgetUs);
                 }
                 m_InputPercentileBuffer.observe(m_Pending.smoothness.frame,
@@ -2995,7 +3007,9 @@ void VrrTimingController::noteSubmission(bool submitted, bool cancelled,
                         inputAfter.eligible == inputBefore.eligible + 1,
                         inputAfter.absorbed > inputBefore.absorbed, inputAfter.missed > inputBefore.missed,
                         inputAfter.lastInputRequiredUs > int64_t(m_Parameters.playoutInputPercentileToleranceUs) ?
-                            uint64_t(inputAfter.lastInputRequiredUs) - m_Parameters.playoutInputPercentileToleranceUs : 0);
+                            uint64_t(inputAfter.lastInputRequiredUs) - m_Parameters.playoutInputPercentileToleranceUs : 0,
+                        inputAfter.lastInputRequiredUs, m_Parameters.playoutInputPercentileToleranceUs,
+                        m_Pending.inputClockOffsetUs, m_Parameters.playoutInputStableAdaptation >= 14);
                     // A lost-cause span is not scored either. The score was
                     // already updated for this frame, so remove it with the
                     // rest of the span; later frames are removed as they come.
@@ -3465,8 +3479,20 @@ uint64_t VrrTimingController::inputDecoderBacklogUs(const PacedFrame& frame)
     // length. Only queue time above the recent typical handoff is backlog.
     constexpr size_t kDecoderQueueHistoryFrames = 64;
     constexpr size_t kDecoderQueueBaselineMinimumFrames = 16;
-    const uint64_t backlogUs = m_DecoderQueueHistory.size() < kDecoderQueueBaselineMinimumFrames ? queueUs :
-        queueUs - std::min(queueUs, percentile(m_DecoderQueueHistory, 50));
+    uint64_t handoffUs = 0;
+    if (m_DecoderQueueHistory.size() >= kDecoderQueueBaselineMinimumFrames) {
+        handoffUs = percentile(m_DecoderQueueHistory, 50);
+        if (m_Parameters.playoutInputStableAdaptation >= 14 &&
+            m_Parameters.normalizedSourceMapping && m_CorrectedMappingBasis) {
+            // Sustained decoder backlog is not a new handoff cost. Retain the
+            // smallest qualified median; a later queue cannot move it upward.
+            m_DecoderQueueBaselineUs = m_HaveDecoderQueueBaseline ?
+                std::min(m_DecoderQueueBaselineUs, handoffUs) : handoffUs;
+            m_HaveDecoderQueueBaseline = true;
+            handoffUs = m_DecoderQueueBaselineUs;
+        }
+    }
+    const uint64_t backlogUs = queueUs - std::min(queueUs, handoffUs);
     appendBounded(m_DecoderQueueHistory, queueUs, kDecoderQueueHistoryFrames);
     return backlogUs;
 }
@@ -4603,7 +4629,8 @@ void VrrTimingController::updatePlayoutHistory(
                 }
                 // Retire expired evidence at the decision, including the first
                 // frame after quiet time; this adds no new jitter observation.
-                if (m_Parameters.playoutInputHitchMissesOnly == 9) {
+                if (m_Parameters.playoutInputHitchMissesOnly == 9 ||
+                    m_Parameters.playoutInputStableAdaptation >= 14) {
                     const uint64_t sinceDrop = m_InputRateDropAtUs && nowUs >= m_InputRateDropAtUs ?
                         nowUs - m_InputRateDropAtUs : UINT64_MAX;
                     const bool settling = sinceDrop < 10000000 &&
@@ -4622,7 +4649,8 @@ void VrrTimingController::updatePlayoutHistory(
                 {
                     uint64_t hitchBudgetUs = 0;
                     const bool hitchBudget = m_InputCoverageHistory.hitchBudgetBuffer(
-                        m_Parameters.playoutInputPercentileTargetPerMillion, hitchBudgetUs);
+                        m_Parameters.playoutInputPercentileTargetPerMillion, hitchBudgetUs,
+                        inputClockOffsetUs(nowUs), m_Parameters.playoutInputStableAdaptation >= 14);
                     m_InputPercentileBuffer.setHitchBudgetBuffer(hitchBudget, hitchBudgetUs);
                 }
                 m_InputPercentileBuffer.advance(nowUs, playoutDelayMinimumUs(),
